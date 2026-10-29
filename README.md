@@ -26,9 +26,21 @@ npm run build      # production build into dist/
 npm run preview    # serve the production build
 ```
 
+## End-to-end tests
+
+`e2e/suite.mjs` drives the real app in Chromium (Playwright) and checks every exported file with ffmpeg: frame counts, codecs, A/V sync against flash/beep test videos, frame-by-frame match with the source, and preview-vs-export pixel match. It also covers MOV, no-audio, 60 fps, rotated, portrait, BT.709 and VP9 inputs, keyboard shortcuts, presets, recent projects, styles, cancel, and idle rendering.
+
+```bash
+e2e/fixtures.sh                          # once, generates test videos (needs ffmpeg)
+npm run build && npx vite preview --port 4173 &
+npm run test:e2e                         # or: node e2e/suite.mjs keyboard   (filter by test name)
+```
+
 ## Deploy
 
 It's a static site. Any static host works.
+
+**GitHub Pages (set up in this repo):** `.github/workflows/deploy.yml` runs the unit tests, builds, and publishes on every push. One-time setup: in the repo go to Settings, then Pages, and set Source to "GitHub Actions". The site is then at `https://rayanabid22.github.io/IMPCT---Breakdown-site/`.
 
 **Vercel:** import the repo at vercel.com/new. The included `vercel.json` sets the build command (`npm run build`) and the output folder (`dist`). Or from a terminal: `npx vercel --prod`.
 
@@ -66,5 +78,5 @@ src/
 ## Notes and limits
 
 - X accepts videos up to 512 MB and 2:20 on most accounts. The export dialog warns when either limit is likely to be exceeded.
-- Untagged source videos are decoded with the same color matrix Chrome's video player uses (BT.601), so export colors match the preview.
+- Untagged source videos (no color info in the file) are interpreted differently per codec by Chrome's player. The export decodes one frame both ways and uses whichever matches the preview, so colors always match what you saw.
 - The real-time fallback (non-Chromium browsers) produces MP4 when the browser supports it, otherwise WebM.

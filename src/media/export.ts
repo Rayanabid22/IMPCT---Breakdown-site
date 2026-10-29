@@ -64,12 +64,17 @@ export function hasWebCodecs(): boolean {
 
 const AAC_BITRATE = 192_000;
 
+type Matrix = 'bt709' | 'smpte170m';
+
 /**
- * Untagged video: Chrome's <video> element (our preview) decodes it with the BT.601 matrix, while
- * Mediabunny would assume BT.709. Fill the gaps the way the preview does so the export matches it.
+ * Untagged video (no color info in the file) is up to the browser to interpret, and Chrome's <video>
+ * element, which drives the preview, picks different matrices per codec (BT.709 for H.264, BT.601
+ * for VP9). Mediabunny would always assume BT.709. To keep the export identical to the preview, we
+ * decode one frame both ways and keep whichever matrix matches what the preview shows.
  */
-function matchPreviewColors(track: InputVideoTrack) {
+async function matchPreviewColors(track: InputVideoTrack, file: Blob): Promise<void> {
   const original = track.getDecoderConfig.bind(track);
+  let matrix: Matrix = track.codec === 'vp8' || track.codec === 'vp9' ? 'smpte170m' : 'bt709';
   track.getDecoderConfig = async () => {
     const config = await original();
     if (!config) return config;
@@ -80,11 +85,76 @@ function matchPreviewColors(track: InputVideoTrack) {
       colorSpace: {
         primaries: cs.primaries ?? 'bt709',
         transfer: cs.transfer ?? 'bt709',
-        matrix: cs.matrix ?? 'smpte170m',
+        matrix: cs.matrix ?? matrix,
         fullRange: cs.fullRange ?? false,
       },
     };
   };
+  const cs = await track.getColorSpace().catch(() => ({}) as VideoColorSpaceInit);
+  if (cs.matrix) return;
+  try {
+    const first = await track.getFirstTimestamp();
+    const duration = (await track.computeDuration()) - first;
+    const t = Math.min(1, duration / 2);
+    const reference = await elementPixels(file, t);
+    if (!reference) return;
+    let best = Infinity;
+    let chosen = matrix;
+    for (const candidate of ['bt709', 'smpte170m'] as Matrix[]) {
+      matrix = candidate;
+      const sink = new CanvasSink(track, { width: PROBE_W, height: PROBE_H, fit: 'fill', poolSize: 1 });
+      const wrapped = await sink.getCanvas(first + t);
+      if (!wrapped) continue;
+      const ctx = wrapped.canvas.getContext('2d') as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D;
+      const d = pixelDiff(reference, ctx.getImageData(0, 0, PROBE_W, PROBE_H).data);
+      if (d < best) {
+        best = d;
+        chosen = candidate;
+      }
+    }
+    matrix = chosen;
+  } catch (err) {
+    console.warn('Color calibration skipped', err);
+  }
+}
+
+const PROBE_W = 64;
+const PROBE_H = 36;
+
+function pixelDiff(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+  let s = 0;
+  for (let i = 0; i < a.length; i += 4) s += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+  return s;
+}
+
+/** A small frame at time t as the browser's <video> element shows it. */
+async function elementPixels(file: Blob, t: number): Promise<Uint8ClampedArray | null> {
+  const v = document.createElement('video');
+  v.muted = true;
+  v.preload = 'auto';
+  const url = URL.createObjectURL(file);
+  try {
+    const wait = (ev: string) =>
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 8000);
+        v.addEventListener(ev, () => (clearTimeout(timer), resolve(true)), { once: true });
+        v.addEventListener('error', () => (clearTimeout(timer), resolve(false)), { once: true });
+      });
+    const loaded = wait('loadeddata');
+    v.src = url;
+    if (!(await loaded)) return null;
+    const seeked = wait('seeked');
+    v.currentTime = t;
+    if (!(await seeked)) return null;
+    const c = new OffscreenCanvas(PROBE_W, PROBE_H);
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(v, 0, 0, PROBE_W, PROBE_H);
+    return ctx.getImageData(0, 0, PROBE_W, PROBE_H).data;
+  } finally {
+    v.removeAttribute('src');
+    v.load();
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** Frame-accurate offline export with WebCodecs. Returns an MP4 blob. */
@@ -117,7 +187,7 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
         'Try converting it to H.264 MP4 first (for example with HandBrake), then upload it again.',
       );
     }
-    matchPreviewColors(videoTrack);
+    await matchPreviewColors(videoTrack, job.videoFile);
     const audioTrack = await input.getPrimaryAudioTrack().catch(() => null);
     // Anchor on the video track. Audio can start slightly earlier (AAC priming) and must keep that offset.
     const t0 = await videoTrack.getFirstTimestamp();
@@ -147,7 +217,7 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     if (bgInput && state.style.background.type === 'video') {
       const bgTrack = await bgInput.getPrimaryVideoTrack().catch(() => null);
       if (bgTrack && (await bgTrack.canDecode())) {
-        matchPreviewColors(bgTrack);
+        await matchPreviewColors(bgTrack, job.bgVideoFile!);
         bgSink = new CanvasSink(bgTrack, { poolSize: 2, width: Math.min(W, bgTrack.displayWidth) });
         bgDuration = (await bgTrack.computeDuration()) - (await bgTrack.getFirstTimestamp());
         bgT0 = await bgTrack.getFirstTimestamp();
