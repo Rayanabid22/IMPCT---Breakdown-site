@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RenderState } from '../render/renderFrame';
 import {
+  canEncodeSize,
   estimateBytes,
+  outputSize,
+  type ExportScale,
   ExportError,
   exportWithRecorder,
   exportWithWebCodecs,
@@ -26,6 +29,22 @@ interface Props {
 }
 
 const X_MAX_BYTES = 500 * 1024 * 1024;
+
+function readPref(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writePref(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* ignore */
+  }
+}
 const X_MAX_SECONDS = 140;
 
 function fileSafe(name: string) {
@@ -50,8 +69,25 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
   const abortRef = useRef<AbortController | null>(null);
   const webcodecs = hasWebCodecs();
   const recorder = pickRecorderMime();
-  const { w, h } = state.style.canvas;
+  const [scale, setScale] = useState<ExportScale>(() => (readPref('bs:exportScale') === '1' ? 1 : 2));
+  const [can4k, setCan4k] = useState<boolean | null>(null);
+  const fourK = outputSize(state.style.canvas, 2);
+  const hd = outputSize(state.style.canvas, 1);
+  const effectiveScale: ExportScale = scale === 2 && can4k !== false ? 2 : 1;
+  const { w, h } = effectiveScale === 2 ? fourK : hd;
   const est = estimateBytes(state.duration, w, h, quality);
+
+  useEffect(() => {
+    let alive = true;
+    if (!webcodecs) {
+      setCan4k(false);
+      return;
+    }
+    canEncodeSize(fourK.w, fourK.h, 'high').then((ok) => alive && setCan4k(ok));
+    return () => {
+      alive = false;
+    };
+  }, [fourK.w, fourK.h, webcodecs]);
   const busy = progress !== null && !result && !error;
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -80,6 +116,7 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
       videoFile,
       bgVideoFile,
       quality,
+      scale: effectiveScale,
       signal: ctrl.signal,
       onProgress: setProgress,
       onFrame: (c: CanvasImageSource) => {
@@ -91,6 +128,12 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
       },
     };
     try {
+      // Make sure every font the frame uses is loaded before the first frame is drawn.
+      const b = state.style.boxes;
+      await Promise.all([
+        document.fonts.load(`${b.labelWeight} 40px "${b.font}"`),
+        document.fonts.load('500 40px "JetBrains Mono"'),
+      ]).catch(() => {});
       await document.fonts.ready;
       let blob: Blob;
       let ext = 'mp4';
@@ -136,6 +179,43 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
         {!busy && !result && (
           <>
             <div className="field">
+              <div className="field-label">Resolution</div>
+              <div className="segmented" role="radiogroup" aria-label="Resolution">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={effectiveScale === 2}
+                  className={effectiveScale === 2 ? 'active' : ''}
+                  disabled={can4k === false}
+                  onClick={() => {
+                    setScale(2);
+                    writePref('bs:exportScale', '2');
+                  }}
+                >
+                  4K ({fourK.w} x {fourK.h})
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={effectiveScale === 1}
+                  className={effectiveScale === 1 ? 'active' : ''}
+                  onClick={() => {
+                    setScale(1);
+                    writePref('bs:exportScale', '1');
+                  }}
+                >
+                  HD ({hd.w} x {hd.h})
+                </button>
+              </div>
+              <p className="hint">
+                {can4k === false
+                  ? "This computer can't encode 4K video, so HD is used."
+                  : effectiveScale === 2
+                    ? 'Sharpest text and edges. Your video is scaled up to fill the card. Takes longer than HD.'
+                    : 'Faster export and smaller file.'}
+              </p>
+            </div>
+            <div className="field">
               <div className="field-label">Quality</div>
               <div className="segmented" role="radiogroup" aria-label="Quality">
                 {(['high', 'standard'] as Quality[]).map((q) => (
@@ -161,7 +241,7 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
               </li>
               <li>Estimated file size: about {fmtBytes(est)}</li>
             </ul>
-            {est > X_MAX_BYTES && <p className="warn">This will likely be over 500 MB, which X won't accept. Choose Standard quality.</p>}
+            {est > X_MAX_BYTES && <p className="warn">This will likely be over 500 MB, which X won't accept. Choose Standard quality{effectiveScale === 2 ? ' or HD' : ''}.</p>}
             {state.duration > X_MAX_SECONDS && <p className="warn">This video is longer than 2:20. Most X accounts can't post videos that long.</p>}
             {!webcodecs && (
               <p className="warn">

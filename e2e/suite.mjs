@@ -141,8 +141,9 @@ async function previewPixels(page, w, h) {
   );
   return Uint8Array.from(arr);
 }
-async function exportVideo(page, name, { quality, fps, cancelAfter } = {}) {
+async function exportVideo(page, name, { quality, fps, cancelAfter, res = 'HD' } = {}) {
   await page.click('button:has-text("Export MP4")');
+  await page.click(`.modal button:has-text("${res} (")`);
   if (quality) await page.click(`.modal button:has-text("${quality}")`);
   if (fps) await page.click(`.modal button:has-text("${fps} fps")`);
   const warnings = await page.$$eval('.modal .warn', (els) => els.map((e) => e.textContent));
@@ -519,6 +520,75 @@ test('style: logo PNG/SVG, image, gradient, video background, highlight, sizes',
   const f = grayFrames(r4.file, 'crop=200:200:0:880,', 32, 32);
   check(diff(f[10], f[70]) > 3, 'background video animates in export', diff(f[10], f[70]).toFixed(1));
   check(videoStream(probe(r4.file)).width === 1920, '16:9 export size');
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('4K export: native 2x render, video scaled up, in sync', async () => {
+  const page = await newPage();
+  await upload(page, 'test30.mp4', 'Blue');
+  await page.click('button:has-text("Export MP4")');
+  const def = await page.$eval('.modal button[aria-checked="true"]', (e) => e.textContent);
+  check(/4K \(2880 x 2160\)/.test(def), '4K is the default', def);
+  const est = await page.textContent('.export-facts');
+  check(/2880 x 2160/.test(est), 'facts show 4K size', est.replace(/\s+/g, ' '));
+  await page.click('.modal button:has-text("Close")');
+  const r = await exportVideo(page, '4k', { res: '4K' });
+  const p = probe(r.file);
+  const v = videoStream(p);
+  check(v.width === 2880 && v.height === 2160 && v.codec_name === 'h264', '2880x2160 H.264', `${v.width}x${v.height} ${v.profile} level ${v.level}`);
+  check(Math.abs(Number(v.nb_frames) - 899) <= 1, 'frame count', v.nb_frames);
+  check(audioStream(p)?.codec_name === 'aac', 'AAC audio');
+  const mb = Number(p.format.size) / 1e6;
+  check(mb < 300, 'reasonable file size', `${mb.toFixed(0)} MB, ${(Number(p.format.bit_rate) / 1e6).toFixed(1)} Mbps, export ${r.seconds.toFixed(0)}s`);
+  const crop = 'crop=2568:1444:156:200,';
+  const so = syncOffset(r.file, crop, FPS);
+  check(so.firstFlash < 0.001 && so.flashes === 30, 'flashes on the right frames', `${so.flashes}, first ${so.firstFlash}`);
+  check(so.min > -40 && so.max < 40, 'A/V in sync', `mean ${so.mean.toFixed(1)}ms`);
+  // The 1080p video fills the whole 4K card (scaled up, edge to edge).
+  const f = rgbFrame(r.file, 45, 2880, 2160);
+  const at = (x, y) => [...f.subarray((y * 2880 + x) * 3, (y * 2880 + x) * 3 + 3)];
+  const inCard = at(170, 1100);
+  const outside = at(100, 1100);
+  check(inCard[0] > 150 && inCard[1] < 80 && outside[2] > outside[0], 'video fills the card edge to edge', `card ${inCard} bg ${outside}`);
+  const d = await wysiwyg(page, r.file, 45);
+  check(d < 6, '4K export matches the preview', d.toFixed(2));
+  await page.context().close();
+});
+
+test('16:9 4K and border colors', async () => {
+  const page = await newPage();
+  await upload(page, 'test30.mp4');
+  await page.selectOption('.style-panel select >> nth=0', '1920x1080');
+  await page.click('.section-toggle:has-text("Section boxes")');
+  const color = (label) => page.locator(`.field:has(label:text-is("${label}")) input.hex`);
+  await color('Border color').fill('#00FF00');
+  await color('Fill color').fill('#0000FF');
+  await page.locator('.field:has(label:text-is("Border width")) input[type=range]').first().fill('6');
+  await page.locator('.field:has(label:text-is("Border opacity")) input[type=range]').first().fill('1');
+  await page.click('.segmented button:has-text("Semibold")');
+  await page.click('.section-toggle:has-text("Video card")');
+  await page.click('.field:has(label:text-is("Border")) button[role=switch]');
+  const cardSection = page.locator('.style-panel .section:has(.section-toggle:has-text("Video card"))');
+  await cardSection.locator('.field:has(label:text-is("Border color")) input.hex').fill('#FF00FF');
+  await cardSection.locator('.field:has(label:text-is("Border opacity")) input[type=range]').fill('1');
+  await cardSection.locator('.field:has(label:text-is("Border width")) input[type=range]').fill('6');
+  await page.waitForTimeout(400);
+  const r = await exportVideo(page, '4k-169', { res: '4K' });
+  const v = videoStream(probe(r.file));
+  check(v.width === 3840 && v.height === 2160, '3840x2160', `${v.width}x${v.height}`);
+  const f = rgbFrame(r.file, 30, 3840, 2160);
+  // Find the box row: scan down the first box's left border column for green pixels.
+  let green = 0;
+  let magenta = 0;
+  for (let i = 0; i < f.length; i += 3) {
+    if (f[i] < 90 && f[i + 1] > 200 && f[i + 2] < 90) green++;
+    if (f[i] > 200 && f[i + 1] < 90 && f[i + 2] > 200) magenta++;
+  }
+  check(green > 20000, 'box borders use the chosen color', `${green} green px`);
+  check(magenta > 5000, 'card border uses the chosen color', `${magenta} magenta px`);
+  const d = await wysiwyg(page, r.file, 30);
+  check(d < 6, 'export matches preview', d.toFixed(2));
   check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
   await page.context().close();
 });

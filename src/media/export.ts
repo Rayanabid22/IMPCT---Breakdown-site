@@ -35,6 +35,7 @@ export interface ExportJob {
   videoFile: Blob;
   bgVideoFile: Blob | null;
   quality: Quality;
+  scale: ExportScale;
   signal: AbortSignal;
   onProgress: (p: ExportProgress) => void;
   /** Called every few frames with the canvas just rendered, so the UI can show it. */
@@ -49,9 +50,30 @@ export class ExportError extends Error {
   }
 }
 
+/** 1 = canvas size (e.g. 1440x1080), 2 = 4K (e.g. 2880x2160). */
+export type ExportScale = 1 | 2;
+
+export function outputSize(canvas: { w: number; h: number }, scale: ExportScale): { w: number; h: number } {
+  // H.264 needs even dimensions.
+  const even = (v: number) => Math.round((v * scale) / 2) * 2;
+  return { w: even(canvas.w), h: even(canvas.h) };
+}
+
+/**
+ * Bitrate grows slower than pixel count: at 4K the same graphics compress better per pixel, and
+ * this keeps a 60s 4K export around 300 MB instead of 400+.
+ */
 export function videoBitrate(w: number, h: number, quality: Quality): number {
   const base = quality === 'high' ? 14_000_000 : 7_000_000;
-  return Math.round((base * (w * h)) / (1440 * 1080));
+  return Math.round(base * Math.pow((w * h) / (1440 * 1080), 0.75));
+}
+
+export async function canEncodeSize(w: number, h: number, quality: Quality): Promise<boolean> {
+  try {
+    return await canEncodeVideo('avc', { width: w, height: h, bitrate: videoBitrate(w, h, quality) });
+  } catch {
+    return false;
+  }
 }
 
 export function estimateBytes(duration: number, w: number, h: number, quality: Quality): number {
@@ -160,7 +182,8 @@ async function elementPixels(file: Blob, t: number): Promise<Uint8ClampedArray |
 /** Frame-accurate offline export with WebCodecs. Returns an MP4 blob. */
 export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
   const { state, signal } = job;
-  const { w: W, h: H } = state.style.canvas;
+  const { w: W, h: H } = outputSize(state.style.canvas, job.scale);
+  const scale = W / state.style.canvas.w;
   const fps = fpsValue(state.style.fps);
   const total = frameCount(state.duration, fps);
   job.onProgress({ done: 0, total, eta: null, phase: 'preparing' });
@@ -168,8 +191,8 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
   const bitrate = videoBitrate(W, H, job.quality);
   if (!(await canEncodeVideo('avc', { width: W, height: H, bitrate }))) {
     throw new ExportError(
-      'Your browser cannot encode H.264 video at this size.',
-      'Update Chrome or Edge to the latest version, or try a smaller canvas size.',
+      `Your browser cannot encode H.264 video at ${W} x ${H}.`,
+      job.scale > 1 ? 'Choose HD instead of 4K, or update Chrome or Edge to the latest version.' : 'Update Chrome or Edge to the latest version, or try a smaller canvas size.',
     );
   }
 
@@ -249,7 +272,7 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
           if (!r.done && r.value) bgFrame = { image: r.value.canvas, width: r.value.canvas.width, height: r.value.canvas.height };
         }
         const t = i / fps;
-        renderFrame(ctx, state, t, last, cache, 1, bgFrame);
+        renderFrame(ctx, state, t, last, cache, scale, bgFrame);
         await videoSource.add(t, 1 / fps);
         i++;
         const now = performance.now();
@@ -266,7 +289,7 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
       while (i < total) {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
         const t = i / fps;
-        renderFrame(ctx, state, t, last, cache, 1, null);
+        renderFrame(ctx, state, t, last, cache, scale, null);
         await videoSource.add(t, 1 / fps);
         i++;
       }
@@ -370,7 +393,8 @@ export async function exportWithRecorder(job: ExportJob, bgVideoEl: HTMLVideoEle
   const picked = pickRecorderMime();
   if (!picked) throw new ExportError('Your browser cannot record video.', 'Please use the latest Chrome or Edge.');
   const { state, signal } = job;
-  const { w: W, h: H } = state.style.canvas;
+  const { w: W, h: H } = outputSize(state.style.canvas, job.scale);
+  const scale = W / state.style.canvas.w;
   const fps = fpsValue(state.style.fps);
   const total = frameCount(state.duration, fps);
 
@@ -404,7 +428,7 @@ export async function exportWithRecorder(job: ExportJob, bgVideoEl: HTMLVideoEle
   const draw = () => {
     const t = Math.min(video.currentTime, state.duration);
     const bg = bgVideoEl && bgVideoEl.readyState >= 2 ? { image: bgVideoEl, width: bgVideoEl.videoWidth, height: bgVideoEl.videoHeight } : null;
-    renderFrame(ctx, state, t, { image: video, width: video.videoWidth, height: video.videoHeight }, cache, 1, bg);
+    renderFrame(ctx, state, t, { image: video, width: video.videoWidth, height: video.videoHeight }, cache, scale, bg);
     job.onProgress({ done: Math.min(total, Math.round(t * fps)), total, eta: Math.max(0, state.duration - t), phase: 'rendering' });
     job.onFrame?.(canvas);
   };

@@ -175,6 +175,7 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
           <>
             <ColorField label="Border color" value={style.card.borderColor} onChange={(borderColor) => setStyle('card', { borderColor })} />
             <Slider label="Border opacity" min={0} max={1} step={0.01} value={style.card.borderOpacity} format={pct} onChange={(borderOpacity) => setStyle('card', { borderOpacity })} />
+            <Slider label="Border width" min={0.5} max={8} step={0.5} value={style.card.borderWidth} onChange={(borderWidth) => setStyle('card', { borderWidth })} />
           </>
         )}
         <Toggle label="Shadow" checked={style.card.shadow} onChange={(shadow) => setStyle('card', { shadow })} />
@@ -182,13 +183,26 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
 
       <Section title="Section boxes" defaultOpen={false}>
         <Slider label="Row position" min={20} max={200} value={style.rowOffset} onChange={(rowOffset) => setStyle('rowOffset', rowOffset)} hint="Space between the video and the boxes." />
-        <Slider label="Fill opacity" min={0} max={0.5} step={0.01} value={style.boxes.fillOpacity} format={pct} onChange={(fillOpacity) => setStyle('boxes', { fillOpacity })} />
+        <ColorField label="Fill color" value={style.boxes.fillColor} onChange={(fillColor) => setStyle('boxes', { fillColor })} />
+        <Slider label="Fill opacity" min={0} max={1} step={0.01} value={style.boxes.fillOpacity} format={pct} onChange={(fillOpacity) => setStyle('boxes', { fillOpacity })} />
+        <ColorField label="Border color" value={style.boxes.borderColor} onChange={(borderColor) => setStyle('boxes', { borderColor })} />
         <Slider label="Border opacity" min={0} max={1} step={0.01} value={style.boxes.borderOpacity} format={pct} onChange={(borderOpacity) => setStyle('boxes', { borderOpacity })} />
+        <Slider label="Border width" min={0} max={8} step={0.5} value={style.boxes.borderWidth} onChange={(borderWidth) => setStyle('boxes', { borderWidth })} />
         <Slider label="Corner radius" min={0} max={38} value={style.boxes.radius} onChange={(radius) => setStyle('boxes', { radius })} />
         <Slider label="Gap" min={0} max={30} value={style.boxes.gap} onChange={(gap) => setStyle('boxes', { gap })} />
         <Slider label="Height" min={40} max={140} value={style.boxes.height} onChange={(height) => setStyle('boxes', { height })} />
         <SelectField label="Font" value={style.boxes.font} options={FONTS.map((f) => ({ value: f, label: f }))} onChange={(font) => setStyle('boxes', { font })} />
         <Slider label="Label size" min={12} max={48} value={style.boxes.labelSize} onChange={(labelSize) => setStyle('boxes', { labelSize })} />
+        <Segmented
+          label="Label weight"
+          value={String(style.boxes.labelWeight) as '400' | '500' | '600'}
+          options={[
+            { value: '400', label: 'Regular' },
+            { value: '500', label: 'Medium' },
+            { value: '600', label: 'Semibold' },
+          ]}
+          onChange={(w) => setStyle('boxes', { labelWeight: Number(w) as 400 | 500 | 600 })}
+        />
         <ColorField label="Label color" value={style.boxes.labelColor} onChange={(labelColor) => setStyle('boxes', { labelColor })} />
         <Toggle label="Highlight active section" checked={style.boxes.activeHighlight} onChange={(activeHighlight) => setStyle('boxes', { activeHighlight })} />
       </Section>

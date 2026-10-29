@@ -16,7 +16,7 @@ import {
   splitSegment,
 } from './segments';
 import { computeLayout } from './layout';
-import { BLUE, ORANGE } from './presets';
+import { BLUE, mergeStyle, ORANGE } from './presets';
 
 const contiguous = (segs: { start: number; end: number }[], duration: number) => {
   expect(segs[0].start).toBe(0);
@@ -202,5 +202,17 @@ describe('layout', () => {
       expect(L.card.x).toBeGreaterThan(0);
       expect(L.wave.y + L.wave.h).toBeLessThanOrEqual(h);
     }
+  });
+});
+
+describe('saved styles', () => {
+  it('projects saved before border colors existed get the defaults', () => {
+    const old = { boxes: { fillOpacity: 0.2, borderOpacity: 0.5 } } as unknown as Parameters<typeof mergeStyle>[0];
+    const s = mergeStyle(old);
+    expect(s.boxes.fillOpacity).toBe(0.2);
+    expect(s.boxes.borderColor).toBe('#FFFFFF');
+    expect(s.boxes.fillColor).toBe('#FFFFFF');
+    expect(s.boxes.borderWidth).toBe(1.5);
+    expect(s.boxes.labelWeight).toBe(400);
   });
 });

@@ -64,13 +64,17 @@ export interface Style {
     shadow: boolean;
   };
   boxes: {
+    fillColor: string;
     fillOpacity: number;
+    borderColor: string;
     borderOpacity: number;
+    borderWidth: number;
     radius: number;
     gap: number;
     height: number;
     font: string;
     labelSize: number;
+    labelWeight: 400 | 500 | 600;
     labelColor: string;
     labelOpacity: number;
     activeHighlight: boolean;

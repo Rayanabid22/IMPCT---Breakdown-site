@@ -10,7 +10,7 @@ Everything runs in the browser. There's no server and nothing to install, and fi
 2. Play the video and pause where a section changes. Click **Playhead ⇥** on that row to end the section there. You can also drag the white handles on the timeline.
 3. Rename the sections by typing in the label boxes. Use **+ Add section** (or press `S`) to split one.
 4. Change colors, background, glow and logo in the **Style** panel on the right.
-5. Click **Export MP4**. Keep the tab open until it finishes, then post the downloaded file.
+5. Click **Export MP4**. 4K is the default (sharpest text); pick HD for a faster export. Keep the tab open until it finishes, then post the downloaded file.
 
 Your work saves itself. If you refresh or close the tab, the project comes back. To hand a project to someone, use **Save project file** and send them the `.json` file along with the video.
 
@@ -53,7 +53,7 @@ No environment variables are needed.
 - **One renderer.** `src/render/renderFrame.ts` draws every frame on a canvas. The live preview and the export both call the same `renderFrame(ctx, state, time, ...)`, so the exported file matches the preview pixel for pixel. Static layers (background, glow, grid, waveform, logo, boxes) are cached in an offscreen canvas and only redrawn when their settings change. Each frame only draws the video, the active box and the playhead.
 - **Layout.** `src/lib/layout.ts` holds the reference measurements from our posts at 1440x1080 (card at x 78 to 1362, y 100, 16:9, row below it). Other canvas sizes scale and center the same layout.
 - **Playhead.** `playheadX()` in `src/lib/segments.ts` finds the active segment and places the playhead inside that box, so it never sits in a gap. The timing is stretched by less than one frame so the final frame lands exactly at the end of the last box.
-- **Export.** `src/media/export.ts` uses WebCodecs through [Mediabunny](https://mediabunny.dev). Source frames are decoded in order, each output frame is rendered offline, encoded as H.264 (14 Mbps High or 7 Mbps Standard at 1440x1080, keyframe every 2s), and muxed into an MP4 with the moov atom at the front. AAC audio is copied through untouched. Other audio (Opus in WebM, for example) is re-encoded to AAC, with a WebAssembly encoder as a fallback when the browser has no AAC encoder. If WebCodecs is missing, it falls back to `MediaRecorder`, which records in real time.
+- **Export.** `src/media/export.ts` uses WebCodecs through [Mediabunny](https://mediabunny.dev). Source frames are decoded in order, each output frame is rendered offline, encoded as H.264 (4K renders the whole frame natively at 2x, e.g. 2880x2160, about 32 Mbps High; HD is 14 Mbps High or 7 Mbps Standard at 1440x1080; keyframe every 2s). The source video is scaled up to fill the card, and muxed into an MP4 with the moov atom at the front. AAC audio is copied through untouched. Other audio (Opus in WebM, for example) is re-encoded to AAC, with a WebAssembly encoder as a fallback when the browser has no AAC encoder. If WebCodecs is missing, it falls back to `MediaRecorder`, which records in real time.
 - **Persistence.** The project (segments, style, name) autosaves to `localStorage`. The video and uploaded images go to IndexedDB, and the 3 most recent project videos are kept. Project files (`.breakdown.json`) contain segments, style and small images, but never the video.
 
 ### State shape

@@ -144,7 +144,8 @@ function drawGrid(ctx: Ctx, style: Style, L: Layout) {
   ctx.fill();
 }
 
-function drawLogo(ctx: Ctx, style: Style, assets: RenderAssets, L: Layout) {
+function drawLogo(ctx: Ctx, style: Style, assets: RenderAssets, L: Layout, scale: number) {
+  const snap = snapper(scale);
   const lg = style.logo;
   const { x, y, size } = L.logo;
   if (lg.mode === 'image' && assets.logoImage) {
@@ -174,7 +175,7 @@ function drawLogo(ctx: Ctx, style: Style, assets: RenderAssets, L: Layout) {
     ctx.font = `500 ${fontPx}px "JetBrains Mono", "IBM Plex Mono", monospace`;
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
-    ctx.fillText(lg.text, x + triW + size * 0.38, top + triH);
+    ctx.fillText(lg.text, snap(x + triW + size * 0.38), snap(top + triH));
   }
 }
 
@@ -240,23 +241,31 @@ function roundRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r: 
   ctx.closePath();
 }
 
-const labelFitCache = new Map<string, { font: string; text: string }>();
+const labelFitCache = new Map<string, FittedLabel>();
 
 /** Call after web fonts load, since text measurements change. */
 export function clearLabelCache() {
   labelFitCache.clear();
 }
 
-function fitLabel(ctx: Ctx, label: string, family: string, sizePx: number, maxW: number, minPx: number): { font: string; text: string } {
-  const key = `${label}|${family}|${sizePx.toFixed(2)}|${maxW.toFixed(1)}|${minPx.toFixed(2)}`;
+interface FittedLabel {
+  font: string;
+  text: string;
+  width: number;
+  /** Cap height of the font at this size, used to center the label optically. */
+  cap: number;
+}
+
+function fitLabel(ctx: Ctx, label: string, family: string, weight: number, sizePx: number, maxW: number, minPx: number): FittedLabel {
+  const key = `${label}|${family}|${weight}|${sizePx.toFixed(2)}|${maxW.toFixed(1)}|${minPx.toFixed(2)}`;
   const hit = labelFitCache.get(key);
   if (hit) return hit;
   let px = sizePx;
-  ctx.font = fontString(px, family);
+  ctx.font = fontString(px, family, weight);
   let w = ctx.measureText(label).width;
   if (w > maxW) {
     px = Math.max(minPx, (px * maxW) / w);
-    ctx.font = fontString(px, family);
+    ctx.font = fontString(px, family, weight);
     w = ctx.measureText(label).width;
   }
   let text = label;
@@ -269,36 +278,54 @@ function fitLabel(ctx: Ctx, label: string, family: string, sizePx: number, maxW:
       else hi = mid - 1;
     }
     text = lo > 0 ? label.slice(0, lo).trimEnd() + '…' : '';
+    w = ctx.measureText(text).width;
   }
-  const result = { font: fontString(px, family), text };
+  const cap = ctx.measureText('H').actualBoundingBoxAscent || px * 0.72;
+  const result = { font: fontString(px, family, weight), text, width: w, cap };
   if (labelFitCache.size > 500) labelFitCache.clear();
   labelFitCache.set(key, result);
   return result;
 }
 
-function drawBox(ctx: Ctx, style: Style, L: Layout, seg: Segment, box: BoxRect, active: boolean) {
+/** Rounds a coordinate to the nearest device pixel, so edges and text land on the pixel grid. */
+const snapper = (scale: number) => (v: number) => Math.round(v * scale) / scale;
+
+function drawBox(ctx: Ctx, style: Style, L: Layout, seg: Segment, box: BoxRect, active: boolean, scale: number) {
   const b = style.boxes;
+  const snap = snapper(scale);
   const r = b.radius * L.s;
-  const lw = 1.5 * L.s;
+  const lw = Math.max(1 / scale, b.borderWidth * L.s);
   const fill = active ? Math.min(1, b.fillOpacity + 0.08) : b.fillOpacity;
   const border = active ? Math.max(b.borderOpacity, 0.7) : b.borderOpacity;
-  roundRect(ctx, box.x + lw / 2, L.row.y + lw / 2, Math.max(0, box.w - lw), L.row.h - lw, r);
-  ctx.fillStyle = `rgba(255,255,255,${fill})`;
-  ctx.fill();
-  ctx.lineWidth = lw;
-  ctx.strokeStyle = `rgba(255,255,255,${border})`;
-  ctx.stroke();
+  // Snap the outer edges, so borders stay crisp instead of smearing across two pixels.
+  const x0 = snap(box.x);
+  const x1 = snap(box.x + box.w);
+  const y0 = snap(L.row.y);
+  const y1 = snap(L.row.y + L.row.h);
+  roundRect(ctx, x0 + lw / 2, y0 + lw / 2, Math.max(0, x1 - x0 - lw), y1 - y0 - lw, r);
+  if (fill > 0) {
+    ctx.fillStyle = hexToRgba(b.fillColor, fill);
+    ctx.fill();
+  }
+  if (border > 0 && lw > 0) {
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = hexToRgba(b.borderColor, border);
+    ctx.stroke();
+  }
   const pad = 12 * L.s;
   const maxW = box.w - pad * 2;
   if (maxW <= 4) return;
   const size = (seg.fontSize ?? b.labelSize) * L.s;
-  const fit = fitLabel(ctx, seg.label, b.font, size, maxW, 12 * L.s);
+  const fit = fitLabel(ctx, seg.label, b.font, b.labelWeight, size, maxW, 12 * L.s);
   if (!fit.text) return;
   ctx.font = fit.font;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = hexToRgba(b.labelColor, active ? 1 : b.labelOpacity);
-  ctx.fillText(fit.text, box.x + box.w / 2, L.row.y + L.row.h / 2 + size * 0.04);
+  // Center on the cap height and start glyphs on whole pixels: the sharpest canvas text there is.
+  const tx = snap(box.x + (box.w - fit.width) / 2);
+  const ty = snap(L.row.y + L.row.h / 2 + fit.cap / 2);
+  ctx.fillText(fit.text, tx, ty);
 }
 
 // ---------- cache ----------
@@ -343,8 +370,8 @@ export class StaticLayerCache {
       ctx.fillStyle = hexToRgba(style.waveform.color, style.waveform.opacity);
       drawBars(ctx, this.wave, 0, this.wave.xs.length);
     }
-    drawLogo(ctx, style, state.assets, L);
-    state.segments.forEach((seg, i) => drawBox(ctx, style, L, seg, boxes[i], false));
+    drawLogo(ctx, style, state.assets, L, scale);
+    state.segments.forEach((seg, i) => drawBox(ctx, style, L, seg, boxes[i], false, scale));
     return this.canvas;
   }
 }
@@ -375,6 +402,7 @@ export function renderFrame(
   ctx.globalCompositeOperation = 'source-over';
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
+  if ('textRendering' in ctx) (ctx as CanvasRenderingContext2D).textRendering = 'geometricPrecision';
 
   if (style.background.type === 'video') {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -422,7 +450,7 @@ export function renderFrame(
   // Active box highlight
   if (style.boxes.activeHighlight) {
     const i = activeIndex(segments, pt);
-    if (i >= 0) drawBox(ctx, style, L, segments[i], boxes[i], true);
+    if (i >= 0) drawBox(ctx, style, L, segments[i], boxes[i], true, scale);
   }
 
   // Playhead
