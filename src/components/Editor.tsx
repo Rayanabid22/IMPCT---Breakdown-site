@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MAIN, type Project, type Segment, type SourceInfo, type Style, type TemplateId, type TemplateState } from '../types';
+import { MAIN, type CustomFont, type Project, type Segment, type SourceInfo, type Style, type TemplateId, type TemplateState, type TextLayer } from '../types';
 import { useHistory, type Doc } from '../store/history';
 import { Player, type SlaveDef } from '../store/player';
 import { Preview, type PreviewHandle } from './Preview';
@@ -10,6 +10,8 @@ import { ExportDialog } from './ExportDialog';
 import { PresetManager } from './PresetManager';
 import { HighlightsPanel } from './HighlightsPanel';
 import { BtsPanel, StoryboardHead } from './TemplatePanels';
+import { TextPanel } from './TextPanel';
+import { defaultTextLayer } from '../render/text';
 import { FileButton } from './controls';
 import { VIDEO_ACCEPT } from './StartScreen';
 import { computePeaks, computeThumbnails, type Thumbnails } from '../media/analyze';
@@ -197,7 +199,10 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     style: project.style,
     presetId: project.presetId,
     tpl: project.tpl,
+    texts: project.texts,
+    fonts: project.fonts,
   });
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
   /** Length of the main (launch) video. */
   const [duration, setDuration] = useState(project.duration);
   const durationRef = useRef(project.duration);
@@ -293,7 +298,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   // ---------- autosave ----------
   useEffect(() => {
     const t = setTimeout(() => {
-      saveProject({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, tpl: doc.tpl, updatedAt: Date.now() });
+      saveProject({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, tpl: doc.tpl, texts: doc.texts, fonts: doc.fonts, updatedAt: Date.now() });
     }, 300);
     return () => clearTimeout(t);
   }, [doc, duration, project.id]);
@@ -319,7 +324,10 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     () => ({ peaks, logoImage: doc.style.logo.mode === 'image' ? (logo?.el ?? null) : null, bgImage: bgImage?.el ?? null, images: images.els }),
     [peaks, logo, bgImage, doc.style.logo.mode, images.els],
   );
-  const renderState: RenderState = useMemo(() => ({ style: doc.style, segments: doc.segments, duration: outDur, assets, tpl }), [doc.style, doc.segments, outDur, assets, tpl]);
+  const renderState: RenderState = useMemo(
+    () => ({ style: doc.style, segments: doc.segments, duration: outDur, assets, tpl, texts: doc.texts }),
+    [doc.style, doc.segments, outDur, assets, tpl, doc.texts],
+  );
 
   // ---------- playback wiring: which videos follow the clock ----------
   useEffect(() => {
@@ -510,7 +518,18 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
 
   // ---------- project file ----------
   const exportJson = async () => {
-    const { file, skipped } = await buildProjectFile({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, tpl: doc.tpl, updatedAt: Date.now() });
+    const { file, skipped } = await buildProjectFile({
+      id: project.id,
+      name: doc.name,
+      duration,
+      segments: doc.segments,
+      style: doc.style,
+      presetId: doc.presetId,
+      tpl: doc.tpl,
+      texts: doc.texts,
+      fonts: doc.fonts,
+      updatedAt: Date.now(),
+    });
     downloadJson(file, `${(doc.name || 'project').replace(/[^\w\- ]+/g, '').trim() || 'project'}.breakdown.json`);
     if (skipped.length) setNotice(`Saved. These videos are not included, send them separately: ${skipped.join(', ')}.`);
   };
@@ -520,7 +539,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
       const scale = duration > 0 && p.duration > 0;
       const segs = scale ? rescaleSegments(p.segments, p.duration, duration) : duration > 0 && p.segments.length === 0 && p.tpl.id === 'breakdown' ? makeEvenSegments(DEFAULT_LABELS, duration) : p.segments;
       const tplIn = scale ? { ...p.tpl, clips: rescaleClips(p.tpl.clips, p.duration, duration) } : p.tpl;
-      apply((d) => ({ ...d, name: p.name, style: p.style, presetId: p.presetId, segments: segs, tpl: tplIn }));
+      apply((d) => ({ ...d, name: p.name, style: p.style, presetId: p.presetId, segments: segs, tpl: tplIn, texts: p.texts, fonts: p.fonts }));
       if (scale && Math.abs(p.duration - duration) > 0.05) {
         setNotice(`This project was made for a ${p.duration.toFixed(1)}s video. Everything was stretched to fit this ${duration.toFixed(1)}s video.`);
       } else setNotice('Project file loaded.');
@@ -528,6 +547,65 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
       setNotice((err as Error).message);
     }
   };
+
+  // ---------- text ----------
+  const setTexts = useCallback((fn: (t: TextLayer[]) => TextLayer[], key?: string) => apply((d) => ({ ...d, texts: fn(d.texts) }), key), [apply]);
+  const addText = () => {
+    const n = docRef.current.texts.length;
+    const layer = defaultTextLayer({ y: Math.min(0.85, 0.5 + n * 0.08) });
+    setTexts((t) => [...t, layer]);
+    setSelectedTextId(layer.id);
+    requestAnimationFrame(() => document.querySelector('.text-chip.active')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  };
+  const changeText = (id: string, patch: Partial<TextLayer>, key?: string) => setTexts((t) => t.map((l) => (l.id === id ? { ...l, ...patch } : l)), key);
+  const duplicateText = (id: string) => {
+    const src = docRef.current.texts.find((l) => l.id === id);
+    if (!src) return;
+    const copy: TextLayer = { ...src, box: { ...src.box }, id: defaultTextLayer().id, y: Math.min(0.95, src.y + 0.08) };
+    setTexts((t) => [...t, copy]);
+    setSelectedTextId(copy.id);
+  };
+  const deleteText = (id: string) => {
+    setTexts((t) => t.filter((l) => l.id !== id));
+    setSelectedTextId(null);
+  };
+  const uploadFont = async (f: File) => {
+    if (!/\.(ttf|otf|woff2?)$/i.test(f.name) && !f.type.startsWith('font/')) return setNotice('Choose a font file: TTF, OTF, WOFF or WOFF2.');
+    const id = newId('asset');
+    const family = `bsf_${id}`;
+    try {
+      const face = new FontFace(family, await f.arrayBuffer());
+      await face.load();
+      document.fonts.add(face);
+      await putBlob(assetKey(id), f, f.name);
+    } catch {
+      return setNotice(`Couldn't read ${f.name} as a font.`);
+    }
+    const font: CustomFont = { assetId: id, family, name: f.name.replace(/\.[^.]+$/, '') };
+    apply((d) => ({
+      ...d,
+      fonts: [...d.fonts, font],
+      texts: selectedTextId ? d.texts.map((l) => (l.id === selectedTextId ? { ...l, font: family } : l)) : d.texts,
+    }));
+  };
+  // Uploaded fonts live in browser storage; register them with the page when the project opens.
+  useEffect(() => {
+    let cancelled = false;
+    for (const f of doc.fonts) {
+      if ([...document.fonts].some((ff) => ff.family === f.family || ff.family === `"${f.family}"`)) continue;
+      getBlob(assetKey(f.assetId))
+        .then(async (stored) => {
+          if (!stored || cancelled) return;
+          const face = new FontFace(f.family, await stored.blob.arrayBuffer());
+          await face.load();
+          document.fonts.add(face);
+        })
+        .catch(() => setNotice(`The font ${f.name} isn't in this browser. Upload it again.`));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.fonts]);
 
   // ---------- keyboard ----------
   const segmentsOn = usesSegments(tpl.id);
@@ -550,6 +628,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
         redo();
         return;
       }
+      if (e.key === 'Escape') setSelectedTextId(null);
       if (typing || mod || e.altKey) return;
       if (target.getAttribute('role') === 'slider' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return;
       const segs = docRef.current.segments;
@@ -682,6 +761,11 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             ↷
           </button>
         </div>
+        <div className="topbar-group">
+          <button type="button" className="btn" onClick={addText} disabled={locked} title="Add a text layer">
+            + Text
+          </button>
+        </div>
         <div className="topbar-group grow-left">
           <FileButton label="Replace video" accept={VIDEO_ACCEPT} onFile={onVideoFile} className="btn ghost" />
           <button type="button" className="btn ghost" onClick={exportJson} disabled={locked} title="Download the project settings as a file you can share">
@@ -723,6 +807,9 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             onVideoFile={onVideoFile}
             getFrames={getFrames}
             projectName={doc.name}
+            selectedTextId={selectedTextId}
+            onSelectText={setSelectedTextId}
+            onMoveText={(id, x, y, key) => changeText(id, { x, y }, key)}
           />
           {(isHighlights(tpl.id) || tpl.id === 'launch2') && (
             <HighlightsPanel tpl={tpl} mainDuration={duration} thumbnails={thumbs} onChange={setTpl} onUploadClip={uploadClip} onUploadAudio={uploadAudio} locked={locked || duration <= 0} />
@@ -765,6 +852,19 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
           </p>
         </div>
         <aside className="side" inert={locked ? true : undefined}>
+          <TextPanel
+            texts={doc.texts}
+            fonts={doc.fonts}
+            selectedId={selectedTextId}
+            onSelect={setSelectedTextId}
+            onAdd={addText}
+            onChange={changeText}
+            onDuplicate={duplicateText}
+            onDelete={deleteText}
+            onUploadFont={uploadFont}
+            player={player}
+            duration={outDur}
+          />
           <StylePanel
             style={doc.style}
             template={tpl.id}

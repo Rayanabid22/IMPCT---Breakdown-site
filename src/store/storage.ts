@@ -1,6 +1,7 @@
 import { MAIN, type Project, type Style, type TemplateState } from '../types';
-import { defaultTemplateState, TEMPLATES } from '../lib/templates';
+import { clipCount, defaultTemplateState, evenClips, TEMPLATES } from '../lib/templates';
 import { mergeStyle, type Preset } from '../lib/presets';
+import { defaultTextLayer } from '../render/text';
 import { normalizeSegments } from '../lib/segments';
 
 const CURRENT_KEY = 'bs:current';
@@ -57,12 +58,16 @@ export function sanitizeProject(raw: Partial<Project> & { id: string }): Project
     style: mergeStyle(raw.style as Partial<Style>),
     presetId: raw.presetId ?? null,
     tpl: sanitizeTemplate(raw.tpl),
+    texts: Array.isArray(raw.texts) ? raw.texts.filter((t) => t && typeof t.text === 'string').map((t) => defaultTextLayer({ ...t, box: { ...defaultTextLayer().box, ...(t.box ?? {}) } })) : [],
+    fonts: Array.isArray(raw.fonts) ? raw.fonts.filter((f) => f && f.assetId && f.family) : [],
     updatedAt: raw.updatedAt ?? Date.now(),
   };
 }
 
 /** Projects saved before templates existed are breakdown projects. */
 function sanitizeTemplate(raw: Partial<TemplateState> | undefined): TemplateState {
+  // 12 Highlights became 16 Highlights (a full 4x4 grid).
+  if ((raw?.id as string) === 'grid12') raw = { ...raw, id: 'grid16' };
   const d = defaultTemplateState(TEMPLATES.some((t) => t.id === raw?.id) ? raw!.id : 'breakdown');
   if (!raw) return d;
   const clips = Array.isArray(raw.clips)
@@ -70,6 +75,12 @@ function sanitizeTemplate(raw: Partial<TemplateState> | undefined): TemplateStat
         .filter((c) => c && typeof c.start === 'number' && typeof c.end === 'number')
         .map((c) => ({ id: String(c.id), sourceId: String(c.sourceId ?? MAIN), start: c.start, end: c.end }))
     : [];
+  // Add tiles if the template now has more than were saved.
+  const need = clipCount({ id: d.id, ringCount: raw.ringCount ?? d.ringCount });
+  if (clips.length > 0 && clips.length < need) {
+    const total = clips.reduce((m, c) => Math.max(m, c.end), 0);
+    clips.push(...evenClips(need, total).slice(clips.length));
+  }
   return {
     ...d,
     ...raw,

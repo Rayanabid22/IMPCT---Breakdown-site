@@ -19,38 +19,51 @@ describe('template layouts', () => {
     { w: 1080, h: 1350 },
     { w: 1920, h: 1080 },
   ];
-  for (const id of ['grid4', 'grid12', 'ring', 'launch2', 'storyboard', 'bts'] as TemplateId[]) {
-    it(`${id}: every card fits on the canvas, is 16:9, no overlaps, at every size`, () => {
+  for (const id of ['grid4', 'grid16', 'ring', 'launch2', 'storyboard', 'bts'] as TemplateId[]) {
+    // Full grids fill the frame, so their tiles take the canvas shape (16:9 on the default canvas).
+    const fills = id === 'grid4' || id === 'grid16';
+    it(`${id}: every card fits on the canvas, ${fills ? 'fills it' : 'is 16:9'}, no overlaps, at every size`, () => {
       for (const c of sizes) {
         const { L } = layoutFor(id, {}, c);
         const rects = [...L.tiles, ...(L.main ? [L.main] : []), ...(L.secondary ? [L.secondary] : []), ...(L.logo ? [L.logo] : [])];
         expect(rects.length).toBeGreaterThan(0);
         for (const r of rects) {
           expect(inside(r, c.w, c.h)).toBe(true);
-          if (r !== L.logo) expect(r.h / r.w).toBeCloseTo(9 / 16);
+          if (r !== L.logo && !fills) expect(r.h / r.w).toBeCloseTo(9 / 16);
         }
         for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) expect(overlap(rects[i], rects[j])).toBe(false);
       }
     });
   }
 
-  it('highlight tiles are exactly 16:9 in whole pixels, at HD and 4K', () => {
-    for (const id of ['grid4', 'grid12', 'ring'] as TemplateId[]) {
+  it('highlight grids fill the frame edge to edge with no gaps', () => {
+    for (const id of ['grid4', 'grid16', 'ring'] as TemplateId[]) {
       for (const n of [6, 7, 8]) {
         for (const c of sizes) {
           const { L } = layoutFor(id, { ringCount: n }, c);
-          for (const t of L.tiles) {
-            expect(t.w * 9).toBe(t.h * 16);
-            expect(Number.isInteger(t.x) && Number.isInteger(t.y) && Number.isInteger(t.w)).toBe(true);
-          }
-          // All tiles in a template are the same size.
-          expect(new Set(L.tiles.map((t) => `${t.w}x${t.h}`)).size).toBe(1);
+          const rects = [...L.tiles, ...(L.logo ? [L.logo] : [])];
+          // Covered area equals the canvas area and nothing overlaps: no gaps anywhere.
+          const area = rects.reduce((a, r) => a + r.w * r.h, 0);
+          expect(area).toBe(c.w * c.h);
+          for (const t of rects) expect(Number.isInteger(t.x) && Number.isInteger(t.y) && Number.isInteger(t.w) && Number.isInteger(t.h)).toBe(true);
+          expect(L.lines.length).toBeGreaterThan(0);
         }
       }
     }
   });
 
-  it('6-8 Highlights: rows on top and bottom, logo band in the middle', () => {
+  it('on a 16:9 canvas every tile is exactly 16:9', () => {
+    for (const id of ['grid4', 'grid16', 'ring'] as TemplateId[]) {
+      for (const n of [6, 7, 8]) {
+        const { L } = layoutFor(id, { ringCount: n });
+        for (const t of L.tiles) expect(t.w * 9).toBe(t.h * 16);
+      }
+    }
+    expect(layoutFor('grid16').L.tiles[0]).toEqual({ x: 0, y: 0, w: 480, h: 270 });
+    expect(layoutFor('grid4').L.tiles[3]).toEqual({ x: 960, y: 540, w: 960, h: 540 });
+  });
+
+  it('6-8 Highlights: full-width rows on top and bottom, logo band in the middle', () => {
     const rows = (n: number) => {
       const { L } = layoutFor('ring', { ringCount: n });
       const top = L.tiles.filter((t) => t.y < L.logo!.y).length;
@@ -60,21 +73,13 @@ describe('template layouts', () => {
     expect(rows(6)).toMatchObject({ top: 3, bottom: 3 });
     expect(rows(7)).toMatchObject({ top: 4, bottom: 3 });
     expect(rows(8)).toMatchObject({ top: 4, bottom: 4 });
-    for (const n of [6, 7, 8]) {
-      const { L } = rows(n);
-      const xs = L.tiles.map((t) => t.x);
-      const left = Math.min(...xs);
-      const right = Math.max(...L.tiles.map((t) => t.x + t.w));
-      // The band spans the rows, and rows are centered on the canvas.
-      expect(L.logo!.x).toBe(left);
-      expect(L.logo!.x + L.logo!.w).toBe(right);
-      expect(Math.abs(left + right - 1920)).toBeLessThanOrEqual(1);
-    }
+    const { L } = rows(8);
+    expect(L.logo).toEqual({ x: 0, y: 270, w: 1920, h: 540 });
   });
 
   it('tile counts match the template', () => {
     expect(layoutFor('grid4').L.tiles.length).toBe(4);
-    expect(layoutFor('grid12').L.tiles.length).toBe(12);
+    expect(layoutFor('grid16').L.tiles.length).toBe(16);
     expect(layoutFor('launch2').L.tiles.length).toBe(2);
     for (const n of [6, 7, 8]) {
       const { L } = layoutFor('ring', { ringCount: n });

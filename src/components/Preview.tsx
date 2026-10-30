@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { renderFrame, StaticLayerCache, clearLabelCache, type Frames, type RenderState } from '../render/renderFrame';
 import { Player, usePlayerTime, usePlaying } from '../store/player';
 import { formatTime } from '../lib/time';
+import { textBounds, textVisible } from '../render/text';
 
 export interface PreviewHandle {
   showExternalFrame: (canvas: CanvasImageSource) => void;
@@ -18,6 +19,10 @@ interface Props {
   /** The current frame of every video the template shows. */
   getFrames: () => Frames;
   projectName: string;
+  selectedTextId: string | null;
+  onSelectText: (id: string | null) => void;
+  /** Move a text layer to (x, y) as fractions of the canvas. */
+  onMoveText: (id: string, x: number, y: number, key: string) => void;
 }
 
 function fileSafe(name: string) {
@@ -47,7 +52,10 @@ export async function downloadScreenshot(state: RenderState, time: number, frame
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ player, state, half, onHalfChange, locked, hasVideo, onVideoFile, getFrames, projectName }, ref) {
+export const Preview = forwardRef<PreviewHandle, Props>(function Preview(
+  { player, state, half, onHalfChange, locked, hasVideo, onVideoFile, getFrames, projectName, selectedTextId, onSelectText, onMoveText },
+  ref,
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new StaticLayerCache());
   const [fontsVersion, setFontsVersion] = useState(0);
@@ -57,6 +65,65 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ playe
   const scale = half ? 0.5 : 1;
   const W = Math.round(state.style.canvas.w * scale);
   const H = Math.round(state.style.canvas.h * scale);
+  const suppressClick = useRef(false);
+  const [, setLayoutTick] = useState(0);
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const ro = new ResizeObserver(() => setLayoutTick((n) => n + 1));
+    ro.observe(c);
+    return () => ro.disconnect();
+  }, []);
+  // Re-render when the playhead moves, so the selection outline follows text that appears and disappears.
+  usePlayerTime(player, 250);
+
+  /** Canvas units under the pointer. */
+  const toCanvas = (e: { clientX: number; clientY: number }) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return { x: ((e.clientX - r.left) / r.width) * state.style.canvas.w, y: ((e.clientY - r.top) / r.height) * state.style.canvas.h };
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (locked || !state.texts?.length) return;
+    const { w: W, h: H } = state.style.canvas;
+    const p = toCanvas(e);
+    const hit = [...state.texts].reverse().find((l) => {
+      if (!textVisible(l, player.time)) return false;
+      const b = textBounds(l, W, H);
+      return p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+    });
+    if (!hit) return;
+    suppressClick.current = true;
+    onSelectText(hit.id);
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const dx = p.x - hit.x * W;
+    const dy = p.y - hit.y * H;
+    const key = `drag-text-${hit.id}-${Date.now()}`;
+    const move = (ev: PointerEvent) => {
+      const q = toCanvas(ev);
+      onMoveText(hit.id, Math.max(0, Math.min(1, (q.x - dx) / W)), Math.max(0, Math.min(1, (q.y - dy) / H)), key);
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  };
+
+  // Outline around the selected text, drawn as an overlay so it never ends up in the export.
+  let outline: React.CSSProperties | null = null;
+  const selText = state.texts?.find((t) => t.id === selectedTextId);
+  const canvasEl = canvasRef.current;
+  if (selText && canvasEl && !locked && textVisible(selText, player.time)) {
+    const b = textBounds(selText, state.style.canvas.w, state.style.canvas.h);
+    const k = canvasEl.clientWidth / state.style.canvas.w;
+    outline = { left: canvasEl.offsetLeft + b.x * k, top: canvasEl.offsetTop + b.y * k, width: b.w * k, height: b.h * k };
+  }
+
   const lockedRef = useRef(locked);
   lockedRef.current = locked;
 
@@ -130,9 +197,17 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ playe
           width={W}
           height={H}
           style={{ aspectRatio: `${state.style.canvas.w} / ${state.style.canvas.h}` }}
-          onClick={() => !locked && player.toggle()}
+          onPointerDown={onPointerDown}
+          onClick={() => {
+            if (suppressClick.current) {
+              suppressClick.current = false;
+              return;
+            }
+            if (!locked) player.toggle();
+          }}
           aria-label="Post preview. Click to play or pause."
         />
+        {outline && <div className="text-outline" style={outline} aria-hidden />}
         {busy && hasVideo && !locked && <div className="stage-busy">Loading frames…</div>}
         {!hasVideo && !locked && <div className="stage-note">Drop the video for this project here, or use Replace video in the top bar.</div>}
       </div>

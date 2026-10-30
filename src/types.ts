@@ -85,11 +85,41 @@ export interface Style {
   };
   playhead: { color: string; size: number; lineWidth: number };
   /** Multi-card templates: space between cards and around the edge, in px at 1080 reference. */
-  layout: { gap: number; margin: number };
+  layout: { gap: number; margin: number; line: number; lineColor: string };
   /** Titles above cards (Storyboard:, Result:, BTS:). */
   heading: { size: number; color: string; weight: 400 | 500 | 600; gap: number };
   /** Gap between the bottom of the video card and the top of the segment row, reference px. */
   rowOffset: number;
+}
+
+/** Free text placed on the post. Positions are fractions of the canvas, sizes px at 1080 reference. */
+export interface TextLayer {
+  id: string;
+  text: string;
+  font: string;
+  weight: 400 | 500 | 600 | 700 | 800;
+  size: number;
+  color: string;
+  opacity: number;
+  align: 'left' | 'center' | 'right';
+  /** Anchor x (left edge, center or right edge, per align), 0..1. */
+  x: number;
+  /** Vertical center of the text block, 0..1. */
+  y: number;
+  letterSpacing: number;
+  lineHeight: number;
+  box: { on: boolean; color: string; opacity: number; padding: number; radius: number };
+  shadow: boolean;
+  /** Visible from `start` until `end` (seconds); end null = until the end of the post. */
+  start: number;
+  end: number | null;
+}
+
+/** A font file the user uploaded, registered under `family`. */
+export interface CustomFont {
+  assetId: string;
+  family: string;
+  name: string;
 }
 
 export interface Project {
@@ -101,10 +131,12 @@ export interface Project {
   style: Style;
   presetId: string | null;
   tpl: TemplateState;
+  texts: TextLayer[];
+  fonts: CustomFont[];
   updatedAt: number;
 }
 
-export type TemplateId = 'breakdown' | 'grid4' | 'ring' | 'launch2' | 'grid12' | 'storyboard' | 'bts';
+export type TemplateId = 'breakdown' | 'grid4' | 'ring' | 'launch2' | 'grid16' | 'storyboard' | 'bts';
 
 /** The project video is source 'main'; uploaded clips are assets with their own ids. */
 export const MAIN = 'main';

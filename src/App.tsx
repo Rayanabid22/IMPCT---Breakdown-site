@@ -94,6 +94,8 @@ export default function App() {
       style: template === 'breakdown' ? cloneStyle((preset ?? ORANGE).style) : templateStyle(template),
       presetId: preset?.id ?? null,
       tpl: defaultTemplateState(template),
+      texts: [],
+      fonts: [],
       updatedAt: Date.now(),
     };
     setError(null);

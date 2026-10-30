@@ -11,6 +11,8 @@ export interface Preset {
 export const DEFAULT_LABELS = ['Hook', 'Body', 'Features', 'CTA'];
 
 export const FONTS = ['Inter', 'DM Sans', 'Manrope', 'Space Grotesk', 'Poppins'];
+/** Fonts offered for text layers (all loaded from Google Fonts). Uploaded fonts are added per project. */
+export const TEXT_FONTS = [...FONTS, 'Montserrat', 'Playfair Display', 'Instrument Serif', 'Bebas Neue', 'JetBrains Mono'];
 
 const base: Style = {
   canvas: { w: 1440, h: 1080 },
@@ -45,7 +47,7 @@ const base: Style = {
     activeHighlight: false,
   },
   playhead: { color: '#FFFFFF', size: 24, lineWidth: 1.5 },
-  layout: { gap: 14, margin: 28 },
+  layout: { gap: 14, margin: 28, line: 2, lineColor: '#000000' },
   heading: { size: 44, color: '#FFFFFF', weight: 400, gap: 20 },
   rowOffset: 65,
 };

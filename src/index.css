@@ -1033,3 +1033,43 @@ input[type='color'] {
   color: #ddd;
   pointer-events: none;
 }
+
+.text-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.text-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+.text-chip.active {
+  border-color: var(--accent);
+  background: rgba(255, 90, 0, 0.16);
+}
+textarea {
+  font: inherit;
+  color: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: #101117;
+  resize: vertical;
+}
+.text-outline {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
+}
+.stage canvas {
+  touch-action: none;
+}

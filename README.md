@@ -7,14 +7,18 @@ A browser tool that turns a launch video into a finished X / LinkedIn post in ab
 | Template | What it makes |
 |---|---|
 | **Breakdown** | The video in a card, a row of labeled sections (Hook, Body, Features, CTA...) underneath and a playhead moving across them. |
-| **4 Highlights** | A 2x2 grid. Each tile loops its own part of the launch video. Choose the post length and each tile's start and end, or upload your own clip per tile for a compilation. |
-| **6-8 Highlights** | Highlights around the logo in the center. A slider sets 6, 7 or 8 tiles. Own clips work here too. |
+| **4 Highlights** | A 2x2 grid, edge to edge with thin lines between clips (width and color adjustable). Each tile loops its own part of the launch video. Choose the post length and each tile's start and end, or upload your own clip per tile for a compilation. |
+| **6-8 Highlights** | A full-width row of clips on top and at the bottom (6 = 3 + 3, 7 = 4 + 3, 8 = 4 + 4) with the logo on a styled background band in the middle. Own clips work here too. |
 | **Launch + 2 Highlights** | The full video in a big card, two equal cards underneath looping short highlights (loop length adjustable, Shuffle picks new moments). |
-| **12 Highlights** | A 4x3 grid of twelve highlights. |
+| **16 Highlights** | A full 4x4 grid of sixteen highlights, edge to edge. |
 | **Storyboard + Result** | Storyboard frames slide along a filmstrip on top, in sync with the final video below. Each frame's time is set like a breakdown section. |
 | **BTS + Result** | Two equal cards: the behind-the-scenes recording and the final video playing in sync, with a sync offset, swap and editable titles. |
 
-In every template, the camera button next to the play controls saves the current frame as a 4K PNG.
+In every template:
+- **+ Text** adds a text layer: font (built-in Google fonts or your own TTF/OTF/WOFF), weight, size, color, opacity, alignment, letter spacing, line height, background box, shadow, and when it appears. Drag it on the preview to place it.
+- The camera button next to the play controls saves the current frame as a 4K PNG.
+
+On the default 16:9 canvas, every highlight tile is exactly 16:9.
 
 Everything runs in the browser. There's no server and nothing to install, and files never leave the computer. It's built for Chrome or Edge on an ordinary laptop.
 

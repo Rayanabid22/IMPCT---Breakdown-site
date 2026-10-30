@@ -1,6 +1,7 @@
 import type { Style, TemplateId } from '../types';
 import { CANVAS_SIZES } from '../lib/layout';
 import { FONTS } from '../lib/presets';
+import { isEdgeToEdge } from '../lib/templates';
 import { ColorField, FileButton, Section, Segmented, SelectField, Slider, Toggle, pct } from './controls';
 
 export type SetStyle = <K extends keyof Style>(section: K, patch: Style[K] extends object ? Partial<Style[K]> : Style[K]) => void;
@@ -18,6 +19,7 @@ interface Props {
 export function StylePanel({ style, template, setStyle, onBackgroundFile, onLogoFile, bgAssetName, logoAssetName }: Props) {
   const breakdown = template === 'breakdown';
   const titles = template === 'storyboard' || template === 'bts';
+  const edge = isEdgeToEdge(template);
   const bg = style.background;
   const sizeValue = `${style.canvas.w}x${style.canvas.h}`;
   return (
@@ -174,6 +176,7 @@ export function StylePanel({ style, template, setStyle, onBackgroundFile, onLogo
         <Slider label="Top" min={10} max={400} value={style.logo.y} onChange={(y) => setStyle('logo', { y })} />
       </Section>
 
+      {!edge && (
       <Section title={breakdown ? 'Video card' : 'Cards'} defaultOpen={false}>
         <Slider label="Corner radius" min={0} max={60} value={style.card.radius} onChange={(radius) => setStyle('card', { radius })} />
         <Toggle label="Border" checked={style.card.border} onChange={(border) => setStyle('card', { border })} />
@@ -186,6 +189,7 @@ export function StylePanel({ style, template, setStyle, onBackgroundFile, onLogo
         )}
         <Toggle label="Shadow" checked={style.card.shadow} onChange={(shadow) => setStyle('card', { shadow })} />
       </Section>
+      )}
 
 {breakdown ? (
         <>
@@ -222,10 +226,26 @@ export function StylePanel({ style, template, setStyle, onBackgroundFile, onLogo
       </Section>
         </>
       ) : (
-        <Section title="Layout" defaultOpen={false}>
-          <Slider label="Gap between cards" min={0} max={80} value={style.layout.gap} onChange={(gap) => setStyle('layout', { gap })} />
-          <Slider label="Edge margin" min={0} max={160} value={style.layout.margin} onChange={(margin) => setStyle('layout', { margin })} />
-        </Section>
+        edge ? (
+          <Section title="Lines between clips">
+            <Slider
+              label="Line width"
+              min={0}
+              max={12}
+              step={0.5}
+              value={style.layout.line}
+              format={(v) => (v === 0 ? 'Off' : `${v}px`)}
+              onChange={(line) => setStyle('layout', { line })}
+              hint="Clips touch each other and the edges. 0 turns the lines off."
+            />
+            <ColorField label="Line color" value={style.layout.lineColor} onChange={(lineColor) => setStyle('layout', { lineColor })} />
+          </Section>
+        ) : (
+          <Section title="Layout" defaultOpen={false}>
+            <Slider label="Gap between cards" min={0} max={80} value={style.layout.gap} onChange={(gap) => setStyle('layout', { gap })} />
+            <Slider label="Edge margin" min={0} max={160} value={style.layout.margin} onChange={(margin) => setStyle('layout', { margin })} />
+          </Section>
+        )
       )}
       {titles && (
         <Section title="Titles" defaultOpen={false}>

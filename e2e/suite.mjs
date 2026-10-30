@@ -662,12 +662,12 @@ test('4 Highlights: each tile plays its own part, export, 4K screenshot', async 
   check(Math.abs(Number(v.nb_frames) - Math.round(7.5 * FPS)) <= 1, 'frames = post length', v.nb_frames);
   check(Math.abs(Number(audioStream(p)?.duration) - 7.5) < 0.1, 'audio cut to the post length', audioStream(p)?.duration);
   // Tile i shows the source from 7.5*i, so its flashes land at (whole seconds - 7.5*i).
-  // 896x504 tiles (exactly 16:9) centered with a 16px gap.
+  // Edge to edge: 960x540 tiles (exactly 16:9) filling the 1920x1080 frame.
   const cells = [
-    [56, 28],
-    [968, 28],
-    [56, 548],
-    [968, 548],
+    [0, 0],
+    [960, 0],
+    [0, 540],
+    [960, 540],
   ];
   const firsts = cells.map(([x, y]) => flashesIn(r.file, x + 250, y + 100, 400, 300)[0]);
   const want = [0, 0.5, 0, 0.5];
@@ -700,7 +700,7 @@ test('4 Highlights compilation: own clips, uploaded music, post length follows c
   const a = audioStream(p);
   check(a?.codec_name === 'aac' && Math.abs(Number(a.duration) - 20) < 0.1, 'music track, 20s, AAC', `${a?.codec_name} ${a?.duration}`);
   // clip.mov (tile 1) flashes on whole seconds from its own start.
-  const f1 = flashesIn(r.file, 56 + 250, 28 + 100, 400, 300);
+  const f1 = flashesIn(r.file, 250, 100, 400, 300);
   check(f1[0] < 0.04 && f1.length >= 19, 'tile 1 plays clip.mov from its start', `${f1.length} flashes, first ${f1[0]}`);
   const d = await wysiwyg(page, r.file, 75);
   check(d < 7, 'preview matches export', d.toFixed(2));
@@ -765,15 +765,93 @@ test('Launch + 2 Highlights: full video on top, loops below, in sync', async () 
   await page.context().close();
 });
 
-test('12 Highlights: 4K export of 12 tiles', async () => {
+test('16 Highlights: full 4x4 grid, edge to edge, divider lines, 4K', async () => {
   const page = await newPage();
-  await startTemplate(page, '12 Highlights', 'test60.mp4');
-  check((await page.$$('.lane')).length === 12, '12 tiles');
-  const r = await exportVideo(page, 'grid12', { res: '4K' });
+  await startTemplate(page, '16 Highlights', 'test60.mp4');
+  check((await page.$$('.lane')).length === 16, '16 tiles');
+  const r = await exportVideo(page, 'grid16', { res: '4K' });
   const v = videoStream(probe(r.file));
-  check(v.width === 3840 && v.height === 2160 && Math.abs(Number(v.nb_frames) - Math.round(5 * FPS)) <= 1, '3840x2160, 5s', `${v.width}x${v.height} ${v.nb_frames} frames, ${r.seconds.toFixed(0)}s to export`);
+  check(v.width === 3840 && v.height === 2160 && Math.abs(Number(v.nb_frames) - Math.round(3.75 * FPS)) <= 1, '3840x2160, 3.75s', `${v.width}x${v.height} ${v.nb_frames} frames, ${r.seconds.toFixed(0)}s to export`);
+  // Tiles touch the frame edges (video at x=2 and y=2) and the divider lines are dark.
+  const f = rgbFrame(r.file, 20, 3840, 2160);
+  const lum = (x, y) => {
+    const i = (y * 3840 + x) * 3;
+    return (f[i] + f[i + 1] + f[i + 2]) / 3;
+  };
+  const edge = [lum(3, 600), lum(600, 3), lum(3836, 600), lum(600, 2156)];
+  check(edge.every((l) => l > 40), 'video reaches all four edges', edge.map((l) => l.toFixed(0)).join(','));
+  const lines = [lum(960, 300), lum(1920, 300), lum(2880, 300), lum(300, 540), lum(300, 1080), lum(300, 1620)];
+  const beside = [lum(980, 300), lum(1940, 300), lum(2900, 300), lum(300, 560), lum(300, 1100), lum(300, 1640)];
+  check(
+    lines.every((l, i) => l < 25 && beside[i] > l + 30),
+    'thin dark lines between all clips',
+    lines.map((l) => l.toFixed(0)).join(','),
+  );
   const d = await wysiwyg(page, r.file, 40);
   check(d < 7, 'preview matches export', d.toFixed(2));
+  // Line width 0 removes the lines.
+  await page.locator('.field:has(label:text-is("Line width")) input[type=range]').fill('0');
+  const r2 = await exportVideo(page, 'grid16-nolines');
+  const g = rgbFrame(r2.file, 20, 1920, 1080);
+  const at = (x, y) => (g[(y * 1920 + x) * 3] + g[(y * 1920 + x) * 3 + 1] + g[(y * 1920 + x) * 3 + 2]) / 3;
+  check(at(480, 150) > 40, 'line width 0 turns the lines off', at(480, 150).toFixed(0));
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('Text: add, style, drag, timing, uploaded font, export, reload', async () => {
+  const page = await newPage();
+  await startTemplate(page, '4 Highlights', 'test30.mp4');
+  await page.click('button:has-text("+ Text")');
+  await page.fill('#text-body', 'MORE MARKETS');
+  await page.locator('.field:has(label:text-is("Size")) input[type=range]').first().fill('120');
+  await page.click('.field:has(label:text-is("Background box")) button[role=switch]');
+  await page.locator('.field:has(label:text-is("Box color")) input.hex').fill('#00C853');
+  await page.locator('.field:has(label:text-is("Box opacity")) input[type=range]').fill('1');
+  // Drag from the center to near the top.
+  const c = await page.$('.stage canvas');
+  const bb = await c.boundingBox();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height * 0.25, { steps: 6 });
+  await page.mouse.up();
+  const y = await page.$eval('.field:has(label:text-is("Up / down")) .field-value', (e) => e.textContent);
+  check(y === '25%', 'dragged on the preview', y);
+  check((await page.$eval('button[aria-label="Play"], button[aria-label="Pause"]', (e) => e.getAttribute('aria-label'))) === 'Play', 'dragging text does not start playback');
+  // Only from 2s to 5s.
+  await page.click('.field:has(label:text-is("Show the whole time")) button[role=switch]');
+  await page.fill('#tf-Appearsat', '2');
+  await page.press('#tf-Appearsat', 'Enter');
+  await page.fill('#tf-Disappearsat', '5');
+  await page.press('#tf-Disappearsat', 'Enter');
+  // Brand font.
+  await page.setInputFiles('.side input[accept*=".ttf"]', fx('brand.ttf'));
+  await page.waitForFunction(() => document.querySelector('#text-font')?.selectedOptions[0]?.textContent?.includes('(uploaded)'), null, { timeout: 10000 });
+  check(true, 'uploaded font is applied to the text');
+  await page.keyboard.press('Escape');
+  const r = await exportVideo(page, 'text');
+  const greenAt = (n) => {
+    const f = rgbFrame(r.file, n, 1920, 1080);
+    let g = 0;
+    for (let yy = 200; yy < 340; yy++) for (let x = 700; x < 1220; x++) {
+      const i = (yy * 1920 + x) * 3;
+      if (f[i] < 60 && f[i + 1] > 170 && f[i + 2] > 50 && f[i + 2] < 120) g++;
+    }
+    return g;
+  };
+  const before = greenAt(Math.round(1 * FPS));
+  const during = greenAt(Math.round(3 * FPS));
+  const after = greenAt(Math.round(6 * FPS));
+  check(before < 50 && during > 5000 && after < 50, 'text shows only between 2s and 5s, near the top', `${before} / ${during} / ${after} box px`);
+  const d = await wysiwyg(page, r.file, Math.round(3 * FPS));
+  check(d < 6, 'preview matches export with text', d.toFixed(2));
+  const shot = await screenshot(page, 'text-shot');
+  check(shot.w === 3840, 'screenshot includes text at 4K', `${shot.w}x${shot.h}`);
+  await page.reload();
+  await waitReady(page);
+  await page.click('.text-chip');
+  check((await page.inputValue('#text-body')) === 'MORE MARKETS', 'text survives a refresh');
+  check((await page.$eval('#text-font', (e) => e.selectedOptions[0].textContent)).includes('(uploaded)'), 'uploaded font survives a refresh');
   check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
   await page.context().close();
 });

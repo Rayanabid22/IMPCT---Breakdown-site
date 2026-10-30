@@ -1,4 +1,5 @@
-import type { FrameSource, RenderAssets, Segment, Style, TemplateState } from '../types';
+import type { FrameSource, RenderAssets, Segment, Style, TemplateState, TextLayer } from '../types';
+import { drawTexts } from './text';
 import { computeLayout, type Layout } from '../lib/layout';
 import { activeIndex, computeBoxes, playheadX, type BoxRect } from '../lib/segments';
 import { playheadTime } from '../lib/time';
@@ -11,6 +12,7 @@ export interface RenderState {
   duration: number;
   assets: RenderAssets;
   tpl: TemplateState;
+  texts?: TextLayer[];
 }
 
 /** The decoded frames available for one output frame. Clips are index-aligned with tpl.clips. */
@@ -443,6 +445,10 @@ export function renderFrame(ctx: Ctx, state: RenderState, time: number, frames: 
   }
   if (state.tpl.id === 'breakdown') renderBreakdown(ctx, state, time, frames.main ?? null, cache, scale);
   else renderTemplate(ctx, state, time, frames, cache, scale);
+  // Text sits on top of everything, in every template.
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.globalAlpha = 1;
+  drawTexts(ctx, state.texts, state.style.canvas.w, state.style.canvas.h, time, scale);
 }
 
 function drawHeadings(ctx: Ctx, style: Style, L: TemplateLayout, scale: number) {
@@ -498,6 +504,15 @@ function renderTemplate(ctx: Ctx, state: RenderState, time: number, frames: Fram
     drawCard(ctx, style, r, f, u);
     if (!f && !tpl.clips[i]) placeholder(ctx, style, r, `Highlight ${i + 1}`, u);
   });
+  // Thin divider lines between edge-to-edge tiles.
+  const lw = style.layout.line * u;
+  if (L.lines.length && lw > 0) {
+    ctx.fillStyle = style.layout.lineColor;
+    for (const [x1, y1, x2, y2] of L.lines) {
+      if (x1 === x2) ctx.fillRect(x1 - lw / 2, y1, lw, y2 - y1);
+      else ctx.fillRect(x1, y1 - lw / 2, x2 - x1, lw);
+    }
+  }
   if (L.secondary) {
     drawCard(ctx, style, L.secondary, frames.secondary ?? null, u);
     if (!frames.secondary) placeholder(ctx, style, L.secondary, tpl.secondary.sourceId ? '' : 'Upload the BTS video', u);

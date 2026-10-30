@@ -137,6 +137,7 @@ export function ExportDialog({ state, projectName, sources, bgVideoFile, bgVideo
       await Promise.all([
         document.fonts.load(`${b.labelWeight} 40px "${b.font}"`),
         document.fonts.load('500 40px "JetBrains Mono"'),
+        ...(state.texts ?? []).map((t) => document.fonts.load(`${t.weight} 40px "${t.font}"`)),
       ]).catch(() => {});
       await document.fonts.ready;
       let blob: Blob;

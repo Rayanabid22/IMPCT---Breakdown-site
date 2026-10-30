@@ -20,11 +20,12 @@ export async function buildProjectFile(project: Project): Promise<{ file: Projec
     project.style.background.assetId,
     ...project.segments.map((s) => s.assetId),
     ...Object.keys(project.tpl.sources),
+    ...project.fonts.map((f) => f.assetId),
   ].filter((x, i, a): x is string => !!x && a.indexOf(x) === i);
   for (const id of ids) {
     const stored = await getBlob(assetKey(id)).catch(() => null);
     if (!stored) continue;
-    if (stored.blob.size > MAX_EMBED || stored.type.startsWith('video/')) {
+    if (stored.blob.size > MAX_EMBED || stored.type.startsWith('video/') || stored.type.startsWith('audio/')) {
       skipped.push(stored.name);
       continue;
     }

@@ -1,5 +1,5 @@
 import { useCallback, useReducer } from 'react';
-import type { Segment, Style, TemplateState } from '../types';
+import type { CustomFont, Segment, Style, TemplateState, TextLayer } from '../types';
 
 /** Everything undoable. */
 export interface Doc {
@@ -8,6 +8,8 @@ export interface Doc {
   style: Style;
   presetId: string | null;
   tpl: TemplateState;
+  texts: TextLayer[];
+  fonts: CustomFont[];
 }
 
 interface HistoryState {

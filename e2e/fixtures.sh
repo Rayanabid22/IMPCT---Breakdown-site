@@ -33,3 +33,5 @@ i=1; for c in 0xE63946 0x2A9D8F 0xE9C46A 0x264653 0x8E44AD; do
   q -f lavfi -i "color=c=$c:s=1600x900" -vf "drawbox=x=100:y=100:w=1400:h=700:color=white@0.6:t=8" -frames:v 1 sb$i.png; i=$((i+1)); done
 q -f lavfi -i "testsrc2=size=1920x1080:rate=30000/1001:duration=30" -vf "drawgrid=w=240:h=240:t=3:c=0x00FF88@0.9,drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='lt(mod(t\,1)\,0.1)'" -c:v libx264 -pix_fmt yuv420p -preset veryfast bts30.mp4
 q -f lavfi -i "sine=f=330:d=20" -c:a aac -b:a 128k music.m4a
+# Any TTF works as the "brand font" for the text tests.
+cp "$(fc-list : file | grep -m1 -i '\.ttf' | cut -d: -f1)" brand.ttf
