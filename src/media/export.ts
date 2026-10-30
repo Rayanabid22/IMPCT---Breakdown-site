@@ -247,6 +247,7 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
   };
 
   let output: Output | null = null;
+  const streams: Stream[] = [];
   try {
     // Which videos this template shows, and where each one is at output time t.
     const L = tpl.id === 'breakdown' ? null : computeTemplateLayout(state.style, tpl);
@@ -287,7 +288,6 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     }
     await output.start();
 
-    const streams: Stream[] = [];
     for (const sp of specs) {
       const d = await open(sp.source, true);
       const track = d.track!;
@@ -346,7 +346,6 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
           job.onFrame?.(canvas);
         }
       }
-      await Promise.all(streams.map((s) => s.iter.return?.()));
       videoSource.close();
     };
 
@@ -362,6 +361,8 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     }
     throw err;
   } finally {
+    // Close every decoder, also when cancelled or failed, so no decoded frames are left open.
+    await Promise.all(streams.map((s) => Promise.resolve(s.iter.return?.()).catch(() => {})));
     for (const d of opened.values()) d.input.dispose();
   }
 }
