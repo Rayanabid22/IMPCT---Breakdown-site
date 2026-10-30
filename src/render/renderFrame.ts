@@ -474,7 +474,9 @@ function renderTemplate(ctx: Ctx, state: RenderState, time: number, frames: Fram
   const { w: W, h: H } = style.canvas;
 
   const layer = cache.get(state, scale, (c) => {
-    drawGlow(c, style, W / 2, H * 0.75, u);
+    // Glow sits behind the logo in 6-8 Highlights, low and centered elsewhere.
+    if (L.logo) drawGlow(c, style, L.logo.x + L.logo.w / 2, L.logo.y + L.logo.h / 2, u);
+    else drawGlow(c, style, W / 2, H * 0.75, u);
     drawGrid(c, style, u);
     for (const r of [...L.tiles, ...(L.main ? [L.main] : []), ...(L.secondary ? [L.secondary] : [])]) drawShadow(c, style, r, u, scale);
     drawCornerLogo(c, style, assets, u, scale);

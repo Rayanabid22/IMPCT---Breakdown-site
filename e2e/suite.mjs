@@ -662,13 +662,14 @@ test('4 Highlights: each tile plays its own part, export, 4K screenshot', async 
   check(Math.abs(Number(v.nb_frames) - Math.round(7.5 * FPS)) <= 1, 'frames = post length', v.nb_frames);
   check(Math.abs(Number(audioStream(p)?.duration) - 7.5) < 0.1, 'audio cut to the post length', audioStream(p)?.duration);
   // Tile i shows the source from 7.5*i, so its flashes land at (whole seconds - 7.5*i).
+  // 896x504 tiles (exactly 16:9) centered with a 16px gap.
   const cells = [
-    [0, 0],
-    [967, 0],
-    [0, 547],
-    [967, 547],
+    [56, 28],
+    [968, 28],
+    [56, 548],
+    [968, 548],
   ];
-  const firsts = cells.map(([x, y]) => flashesIn(r.file, x + 270, y + 120, 400, 300)[0]);
+  const firsts = cells.map(([x, y]) => flashesIn(r.file, x + 250, y + 100, 400, 300)[0]);
   const want = [0, 0.5, 0, 0.5];
   check(firsts.every((f, i) => Math.abs(f - want[i]) < 0.04), 'every tile plays its own range', firsts.map((f) => f?.toFixed(3)).join(', '));
   const d = await wysiwyg(page, r.file, 60);
@@ -699,7 +700,7 @@ test('4 Highlights compilation: own clips, uploaded music, post length follows c
   const a = audioStream(p);
   check(a?.codec_name === 'aac' && Math.abs(Number(a.duration) - 20) < 0.1, 'music track, 20s, AAC', `${a?.codec_name} ${a?.duration}`);
   // clip.mov (tile 1) flashes on whole seconds from its own start.
-  const f1 = flashesIn(r.file, 270, 120, 400, 300);
+  const f1 = flashesIn(r.file, 56 + 250, 28 + 100, 400, 300);
   check(f1[0] < 0.04 && f1.length >= 19, 'tile 1 plays clip.mov from its start', `${f1.length} flashes, first ${f1[0]}`);
   const d = await wysiwyg(page, r.file, 75);
   check(d < 7, 'preview matches export', d.toFixed(2));

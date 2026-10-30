@@ -49,8 +49,11 @@ async function mediaDuration(file: Blob): Promise<number> {
     const v = document.createElement('video');
     const url = URL.createObjectURL(file);
     const done = (d: number) => {
-      URL.revokeObjectURL(url);
+      // Detach the element before releasing the URL, or it may still try to read from it.
+      v.onloadedmetadata = v.onerror = null;
       v.removeAttribute('src');
+      v.load();
+      URL.revokeObjectURL(url);
       resolve(d);
     };
     v.preload = 'metadata';
@@ -76,6 +79,7 @@ function useAsset(id: string | null, kind: 'image' | 'video') {
     }
     let url = '';
     let cancelled = false;
+    let el: HTMLVideoElement | null = null;
     getBlob(assetKey(id))
       .then((stored) => {
         if (!stored || cancelled) return;
@@ -86,6 +90,7 @@ function useAsset(id: string | null, kind: 'image' | 'video') {
           img.src = url;
         } else {
           const v = document.createElement('video');
+          el = v;
           v.muted = true;
           v.playsInline = true;
           v.preload = 'auto';
@@ -96,6 +101,11 @@ function useAsset(id: string | null, kind: 'image' | 'video') {
       .catch(() => setAsset(null));
     return () => {
       cancelled = true;
+      if (el) {
+        el.pause();
+        el.removeAttribute('src');
+        el.load();
+      }
       if (url) URL.revokeObjectURL(url);
     };
   }, [id, kind]);

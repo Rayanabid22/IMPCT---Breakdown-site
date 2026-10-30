@@ -11,7 +11,7 @@ export interface TemplateInfo {
 export const TEMPLATES: TemplateInfo[] = [
   { id: 'breakdown', name: 'Breakdown', blurb: 'Video card with labeled sections and a moving playhead.' },
   { id: 'grid4', name: '4 Highlights', blurb: 'Four moments from the launch video in a 2x2 grid.' },
-  { id: 'ring', name: '6-8 Highlights', blurb: 'Highlights around your logo in the center.' },
+  { id: 'ring', name: '6-8 Highlights', blurb: 'Highlights above and below your logo, on a styled background.' },
   { id: 'launch2', name: 'Launch + 2 Highlights', blurb: 'The full video on top, two looping highlights below.' },
   { id: 'grid12', name: '12 Highlights', blurb: 'Twelve moments in a 4x3 grid.' },
   { id: 'storyboard', name: 'Storyboard + Result', blurb: 'Storyboard frames slide by in sync with the final video.' },
@@ -119,12 +119,16 @@ export function templateStyle(id: TemplateId, from: Style = ORANGE.style): Style
     case 'grid12':
       s.canvas = { w: 1920, h: 1080 };
       s.card.radius = id === 'grid12' ? 10 : 14;
-      s.layout = { gap: id === 'grid12' ? 10 : 14, margin: 0 };
+      s.layout = { gap: id === 'grid12' ? 12 : 16, margin: 24 };
       break;
     case 'ring':
+      // The middle is open background with the logo, styled like the breakdown look.
       s.canvas = { w: 1920, h: 1080 };
+      s.background = { ...from.background };
+      s.glow = { ...from.glow, on: true, offsetY: 0, radius: 300, stretch: 2.4 };
       s.card.radius = 12;
-      s.layout = { gap: 12, margin: 0 };
+      s.card.shadow = true;
+      s.layout = { gap: 14, margin: 40 };
       s.logo = { ...s.logo, size: 90 };
       break;
     case 'launch2':
@@ -177,16 +181,51 @@ export interface TemplateLayout {
 
 const AR = 9 / 16;
 
-/** Cells fill the whole canvas; clips are cover-fitted (cropped) into whatever shape the cells have. */
+/**
+ * Exactly 16:9 tiles, as big as fit, centered; the background shows around them. Tile size is a
+ * whole multiple of 16x9 px and positions are whole pixels, so tiles stay exactly 16:9 in the
+ * export at HD and 4K.
+ */
+function tileSize(W: number, H: number, cols: number, rows: number, m: number, g: number) {
+  const maxW = Math.min((W - 2 * m - (cols - 1) * g) / cols, ((H - 2 * m - (rows - 1) * g) / rows) / AR);
+  const k = Math.max(1, Math.floor(maxW / 16));
+  return { w: 16 * k, h: 9 * k };
+}
+
 function grid(W: number, H: number, cols: number, rows: number, m: number, g: number) {
-  const cellW = (W - 2 * m - (cols - 1) * g) / cols;
-  const cellH = (H - 2 * m - (rows - 1) * g) / rows;
-  const gw = cols * cellW + (cols - 1) * g;
-  const gh = rows * cellH + (rows - 1) * g;
-  const x0 = (W - gw) / 2;
-  const y0 = (H - gh) / 2;
-  const cell = (c: number, r: number, span = 1): Rect => ({ x: x0 + c * (cellW + g), y: y0 + r * (cellH + g), w: span * cellW + (span - 1) * g, h: cellH });
+  const gap = Math.round(g);
+  const { w: cellW, h: cellH } = tileSize(W, H, cols, rows, m, gap);
+  const gw = cols * cellW + (cols - 1) * gap;
+  const gh = rows * cellH + (rows - 1) * gap;
+  const x0 = Math.round((W - gw) / 2);
+  const y0 = Math.round((H - gh) / 2);
+  const cell = (c: number, r: number, span = 1): Rect => ({ x: x0 + c * (cellW + gap), y: y0 + r * (cellH + gap), w: span * cellW + (span - 1) * gap, h: cellH });
   return { cell, cellW, cellH };
+}
+
+/**
+ * 6-8 Highlights: a row of tiles on top, the logo band in the middle, a row at the bottom.
+ * 6 = 3 + 3, 7 = 4 + 3 (bottom row centered), 8 = 4 + 4.
+ */
+function ring(W: number, H: number, n: number, m: number, g: number) {
+  const top = n === 6 ? 3 : 4;
+  const bottom = n - top;
+  const cols = Math.max(top, bottom);
+  const gap = Math.round(g);
+  const { w, h } = tileSize(W, H, cols, 3, m, gap);
+  const gw = cols * w + (cols - 1) * gap;
+  const gh = 3 * h + 2 * gap;
+  const x0 = Math.round((W - gw) / 2);
+  const y0 = Math.round((H - gh) / 2);
+  const row = (count: number, y: number) => {
+    const rw = count * w + (count - 1) * gap;
+    const rx = Math.round((W - rw) / 2);
+    return Array.from({ length: count }, (_, i): Rect => ({ x: rx + i * (w + gap), y, w, h }));
+  };
+  return {
+    tiles: [...row(top, y0), ...row(bottom, y0 + 2 * (h + gap))],
+    logo: { x: x0, y: y0 + h + gap, w: gw, h } as Rect,
+  };
 }
 
 export function computeTemplateLayout(style: Style, tpl: TemplateState): TemplateLayout {
@@ -210,20 +249,9 @@ export function computeTemplateLayout(style: Style, tpl: TemplateState): Templat
       break;
     }
     case 'ring': {
-      const G = grid(W, H, 3, 3, m, g);
-      const n = clipCount(tpl);
-      const top = [G.cell(0, 0), G.cell(1, 0), G.cell(2, 0)];
-      const bottom = [G.cell(0, 2), G.cell(1, 2), G.cell(2, 2)];
-      if (n === 8) {
-        out.tiles = [...top, G.cell(0, 1), G.cell(2, 1), ...bottom];
-        out.logo = G.cell(1, 1);
-      } else if (n === 7) {
-        out.tiles = [...top, G.cell(0, 1), ...bottom];
-        out.logo = G.cell(1, 1, 2);
-      } else {
-        out.tiles = [...top, ...bottom];
-        out.logo = G.cell(0, 1, 3);
-      }
+      const R = ring(W, H, clipCount(tpl), m, g);
+      out.tiles = R.tiles;
+      out.logo = R.logo;
       break;
     }
     case 'launch2': {

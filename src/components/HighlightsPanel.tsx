@@ -98,7 +98,7 @@ export function HighlightsPanel({ tpl, mainDuration, thumbnails, onChange, onUpl
               <span className="field-value">{n}</span>
             </div>
             <input id="ring-count" type="range" min={6} max={8} step={1} value={n} disabled={locked} onChange={(e) => onChange((t) => setRingCount(t, Number(e.target.value), mainDuration))} />
-            <p className="hint">With 6 or 7, the logo gets a wider space.</p>
+            <p className="hint">6: three on top, three below. 7: four and three. 8: four and four. The logo sits in the middle.</p>
           </div>
         )}
         {highlights && (
