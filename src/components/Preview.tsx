@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { renderFrame, StaticLayerCache, clearLabelCache, type RenderState } from '../render/renderFrame';
+import { renderFrame, StaticLayerCache, clearLabelCache, type Frames, type RenderState } from '../render/renderFrame';
 import { Player, usePlayerTime, usePlaying } from '../store/player';
 import { formatTime } from '../lib/time';
 
@@ -15,13 +15,45 @@ interface Props {
   locked: boolean;
   hasVideo: boolean;
   onVideoFile: (f: File) => void;
+  /** The current frame of every video the template shows. */
+  getFrames: () => Frames;
+  projectName: string;
 }
 
-export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ player, state, half, onHalfChange, locked, hasVideo, onVideoFile }, ref) {
+function fileSafe(name: string) {
+  return (name.trim() || 'project').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-').toLowerCase() || 'project';
+}
+
+/** Renders the current frame at 2x (4K) and downloads it as a PNG. */
+export async function downloadScreenshot(state: RenderState, time: number, frames: Frames, name: string) {
+  const scale = 2;
+  const c = document.createElement('canvas');
+  c.width = Math.round(state.style.canvas.w * scale);
+  c.height = Math.round(state.style.canvas.h * scale);
+  const ctx = c.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('Could not create a drawing surface.');
+  await document.fonts.ready;
+  renderFrame(ctx, state, time, frames, new StaticLayerCache(), scale);
+  const blob = await new Promise<Blob | null>((r) => c.toBlob(r, 'image/png'));
+  if (!blob) throw new Error('Could not create the image.');
+  const stamp = formatTime(time).replace(':', 'm').replace('.', 's');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${fileSafe(name)}_${stamp}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ player, state, half, onHalfChange, locked, hasVideo, onVideoFile, getFrames, projectName }, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cache = useRef(new StaticLayerCache());
   const [fontsVersion, setFontsVersion] = useState(0);
   const [dragOver, setDragOver] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => player.subscribe(() => setBusy(!player.playing && player.busy)), [player]);
   const scale = half ? 0.5 : 1;
   const W = Math.round(state.style.canvas.w * scale);
   const H = Math.round(state.style.canvas.h * scale);
@@ -43,14 +75,10 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ playe
     if (!canvas || lockedRef.current) return;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
-    const v = player.video;
-    const src = player.hasVideo && v.readyState >= 2 ? { image: v, width: v.videoWidth, height: v.videoHeight } : null;
-    const bgv = player.bgVideo;
-    const bg = bgv && bgv.readyState >= 2 ? { image: bgv, width: bgv.videoWidth, height: bgv.videoHeight } : null;
-    renderFrame(ctx, state, player.time, src, cache.current, scale, bg);
+    renderFrame(ctx, state, player.time, getFrames(), cache.current, scale);
     // fontsVersion is read so a font load triggers a redraw.
     void fontsVersion;
-  }, [player, state, scale, fontsVersion]);
+  }, [player, state, scale, fontsVersion, getFrames]);
 
   useEffect(() => {
     draw();
@@ -83,6 +111,7 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ playe
     <div className="preview">
       <div
         className={`stage ${dragOver ? 'drag-over' : ''}`}
+        data-busy={busy ? 'true' : undefined}
         onDragOver={(e) => {
           if (locked) return;
           e.preventDefault();
@@ -104,16 +133,39 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview({ playe
           onClick={() => !locked && player.toggle()}
           aria-label="Post preview. Click to play or pause."
         />
+        {busy && hasVideo && !locked && <div className="stage-busy">Loading frames…</div>}
         {!hasVideo && !locked && <div className="stage-note">Drop the video for this project here, or use Replace video in the top bar.</div>}
       </div>
-      <Transport player={player} duration={state.duration} disabled={locked || !hasVideo} half={half} onHalfChange={onHalfChange} />
+      <Transport
+        player={player}
+        duration={state.duration}
+        disabled={locked || !hasVideo}
+        half={half}
+        onHalfChange={onHalfChange}
+        onScreenshot={() => downloadScreenshot(state, player.time, getFrames(), projectName)}
+      />
     </div>
   );
 });
 
-function Transport({ player, duration, disabled, half, onHalfChange }: { player: Player; duration: number; disabled: boolean; half: boolean; onHalfChange: (h: boolean) => void }) {
+function Transport({
+  player,
+  duration,
+  disabled,
+  half,
+  onHalfChange,
+  onScreenshot,
+}: {
+  player: Player;
+  duration: number;
+  disabled: boolean;
+  half: boolean;
+  onHalfChange: (h: boolean) => void;
+  onScreenshot: () => Promise<void>;
+}) {
   const t = usePlayerTime(player);
   const playing = usePlaying(player);
+  const [shooting, setShooting] = useState(false);
   return (
     <div className="transport">
       <button type="button" className="btn icon-btn" onClick={() => player.toggle()} disabled={disabled} aria-label={playing ? 'Pause' : 'Play'} title="Play / pause (Space)">
@@ -133,6 +185,26 @@ function Transport({ player, duration, disabled, half, onHalfChange }: { player:
         aria-label="Scrub"
         onChange={(e) => player.seek(parseFloat(e.target.value))}
       />
+      <button
+        type="button"
+        className="btn icon-btn camera"
+        disabled={disabled || shooting}
+        aria-label="Save this frame as a 4K PNG"
+        title="Save this frame as a 4K PNG"
+        onClick={async () => {
+          setShooting(true);
+          try {
+            await onScreenshot();
+          } finally {
+            setShooting(false);
+          }
+        }}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+          <circle cx="12" cy="13.5" r="3.5" />
+        </svg>
+      </button>
       <div className="segmented small" role="radiogroup" aria-label="Preview quality">
         <button type="button" role="radio" aria-checked={!half} className={!half ? 'active' : ''} onClick={() => onHalfChange(false)} title="Preview at full resolution">
           Full

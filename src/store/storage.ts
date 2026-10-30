@@ -1,4 +1,5 @@
-import type { Project, Style } from '../types';
+import { MAIN, type Project, type Style, type TemplateState } from '../types';
+import { defaultTemplateState, TEMPLATES } from '../lib/templates';
 import { mergeStyle, type Preset } from '../lib/presets';
 import { normalizeSegments } from '../lib/segments';
 
@@ -39,7 +40,14 @@ export function sanitizeProject(raw: Partial<Project> & { id: string }): Project
   const segments = Array.isArray(raw.segments)
     ? raw.segments
         .filter((s) => s && typeof s.start === 'number' && typeof s.end === 'number')
-        .map((s) => ({ id: String(s.id), label: String(s.label ?? ''), start: s.start, end: s.end, ...(s.fontSize ? { fontSize: Number(s.fontSize) } : {}) }))
+        .map((s) => ({
+          id: String(s.id),
+          label: String(s.label ?? ''),
+          start: s.start,
+          end: s.end,
+          ...(s.fontSize ? { fontSize: Number(s.fontSize) } : {}),
+          ...(s.assetId ? { assetId: String(s.assetId) } : {}),
+        }))
     : [];
   return {
     id: raw.id,
@@ -48,7 +56,28 @@ export function sanitizeProject(raw: Partial<Project> & { id: string }): Project
     segments: normalizeSegments(segments, duration),
     style: mergeStyle(raw.style as Partial<Style>),
     presetId: raw.presetId ?? null,
+    tpl: sanitizeTemplate(raw.tpl),
     updatedAt: raw.updatedAt ?? Date.now(),
+  };
+}
+
+/** Projects saved before templates existed are breakdown projects. */
+function sanitizeTemplate(raw: Partial<TemplateState> | undefined): TemplateState {
+  const d = defaultTemplateState(TEMPLATES.some((t) => t.id === raw?.id) ? raw!.id : 'breakdown');
+  if (!raw) return d;
+  const clips = Array.isArray(raw.clips)
+    ? raw.clips
+        .filter((c) => c && typeof c.start === 'number' && typeof c.end === 'number')
+        .map((c) => ({ id: String(c.id), sourceId: String(c.sourceId ?? MAIN), start: c.start, end: c.end }))
+    : [];
+  return {
+    ...d,
+    ...raw,
+    clips,
+    audio: { ...d.audio, ...(raw.audio ?? {}) },
+    secondary: { ...d.secondary, ...(raw.secondary ?? {}) },
+    headings: { ...d.headings, ...(raw.headings ?? {}) },
+    sources: raw.sources && typeof raw.sources === 'object' ? raw.sources : {},
   };
 }
 

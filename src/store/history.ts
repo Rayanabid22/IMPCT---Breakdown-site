@@ -1,5 +1,5 @@
 import { useCallback, useReducer } from 'react';
-import type { Segment, Style } from '../types';
+import type { Segment, Style, TemplateState } from '../types';
 
 /** Everything undoable. */
 export interface Doc {
@@ -7,6 +7,7 @@ export interface Doc {
   segments: Segment[];
   style: Style;
   presetId: string | null;
+  tpl: TemplateState;
 }
 
 interface HistoryState {

@@ -1,16 +1,31 @@
-# Breakdown Studio
+# IMPCT Studio
 
-A browser tool for making IMPCT Studio "breakdown" posts. The launch video plays inside a card, with a row of labeled boxes (Hook, Body, Features, CTA...) underneath and a playhead moving across them. It exports a finished MP4 that's ready to post on X or LinkedIn.
+A browser tool that turns a launch video into a finished X / LinkedIn post in about a minute. Pick a template, drop the video, adjust, export an MP4 (4K by default).
+
+## Templates
+
+| Template | What it makes |
+|---|---|
+| **Breakdown** | The video in a card, a row of labeled sections (Hook, Body, Features, CTA...) underneath and a playhead moving across them. |
+| **4 Highlights** | A 2x2 grid. Each tile loops its own part of the launch video. Choose the post length and each tile's start and end, or upload your own clip per tile for a compilation. |
+| **6-8 Highlights** | Highlights around the logo in the center. A slider sets 6, 7 or 8 tiles. Own clips work here too. |
+| **Launch + 2 Highlights** | The full video in a big card, two equal cards underneath looping short highlights (loop length adjustable, Shuffle picks new moments). |
+| **12 Highlights** | A 4x3 grid of twelve highlights. |
+| **Storyboard + Result** | Storyboard frames slide along a filmstrip on top, in sync with the final video below. Each frame's time is set like a breakdown section. |
+| **BTS + Result** | Two equal cards: the behind-the-scenes recording and the final video playing in sync, with a sync offset, swap and editable titles. |
+
+In every template, the camera button next to the play controls saves the current frame as a 4K PNG.
 
 Everything runs in the browser. There's no server and nothing to install, and files never leave the computer. It's built for Chrome or Edge on an ordinary laptop.
 
 ## How to use (for the team)
 
-1. Open the site in Chrome or Edge and drop your launch video on the big box. You can pick a look first (Orange or Blue) if you want.
-2. Play the video and pause where a section changes. Click **Playhead ⇥** on that row to end the section there. You can also drag the white handles on the timeline.
+1. Open the site in Chrome or Edge, pick a template, and drop your launch video on the big box. For Breakdown you can also pick a look (Orange or Blue).
+2. Breakdown: play the video and pause where a section changes. Click **Playhead ⇥** on that row to end the section there. You can also drag the white handles on the timeline.
 3. Rename the sections by typing in the label boxes. Use **+ Add section** (or press `S`) to split one.
-4. Change colors, background, glow and logo in the **Style** panel on the right.
-5. Click **Export MP4**. 4K is the default (sharpest text); pick HD for a faster export. Keep the tab open until it finishes, then post the downloaded file.
+4. Highlights templates: drag each highlight window on its lane, or type its start and end. Use **Own clip** to swap in a separate video. Storyboard: **+ Add frames**. BTS: **Upload BTS video**.
+5. Change colors, background, glow and logo in the **Style** panel on the right.
+6. Click **Export MP4**. 4K is the default (sharpest text); pick HD for a faster export. Keep the tab open until it finishes, then post the downloaded file.
 
 Your work saves itself. If you refresh or close the tab, the project comes back. To hand a project to someone, use **Save project file** and send them the `.json` file along with the video.
 

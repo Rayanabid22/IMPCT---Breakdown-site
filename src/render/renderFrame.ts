@@ -1,13 +1,24 @@
-import type { FrameSource, RenderAssets, Segment, Style } from '../types';
+import type { FrameSource, RenderAssets, Segment, Style, TemplateState } from '../types';
 import { computeLayout, type Layout } from '../lib/layout';
 import { activeIndex, computeBoxes, playheadX, type BoxRect } from '../lib/segments';
 import { playheadTime } from '../lib/time';
+import { computeTemplateLayout, storyboardPosition, type Rect, type TemplateLayout } from '../lib/templates';
 
 export interface RenderState {
   style: Style;
   segments: Segment[];
+  /** Output duration of the post. */
   duration: number;
   assets: RenderAssets;
+  tpl: TemplateState;
+}
+
+/** The decoded frames available for one output frame. Clips are index-aligned with tpl.clips. */
+export interface Frames {
+  main?: FrameSource | null;
+  bg?: FrameSource | null;
+  clips?: (FrameSource | null)[];
+  secondary?: FrameSource | null;
 }
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -107,12 +118,12 @@ function drawBackground(ctx: Ctx, style: Style, assets: RenderAssets, bgFrame: F
   }
 }
 
-function drawGlow(ctx: Ctx, style: Style, L: Layout) {
+function drawGlow(ctx: Ctx, style: Style, ax: number, ay: number, unit: number) {
   const g = style.glow;
   if (!g.on || g.intensity <= 0) return;
-  const cx = L.row.x + L.row.w / 2;
-  const cy = L.row.y + L.row.h / 2 + g.offsetY * L.s;
-  const r = g.radius * L.s;
+  const cx = ax;
+  const cy = ay + g.offsetY * unit;
+  const r = g.radius * unit;
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(g.stretch, 1);
@@ -127,12 +138,12 @@ function drawGlow(ctx: Ctx, style: Style, L: Layout) {
   ctx.restore();
 }
 
-function drawGrid(ctx: Ctx, style: Style, L: Layout) {
+function drawGrid(ctx: Ctx, style: Style, unit: number) {
   const g = style.grid;
   if (!g.on || g.opacity <= 0) return;
   const { w: W, h: H } = style.canvas;
-  const sp = Math.max(4, g.spacing * L.s);
-  const r = (g.size * L.s) / 2;
+  const sp = Math.max(4, g.spacing * unit);
+  const r = (g.size * unit) / 2;
   ctx.fillStyle = `rgba(255,255,255,${g.opacity})`;
   ctx.beginPath();
   for (let y = sp / 2; y < H; y += sp) {
@@ -144,10 +155,23 @@ function drawGrid(ctx: Ctx, style: Style, L: Layout) {
   ctx.fill();
 }
 
-function drawLogo(ctx: Ctx, style: Style, assets: RenderAssets, L: Layout, scale: number) {
+/** Width of the logo when drawn at `size` (cap height for text, image height for images). */
+function logoWidth(ctx: Ctx, style: Style, assets: RenderAssets, size: number): number {
+  const lg = style.logo;
+  if (lg.mode === 'image' && assets.logoImage) {
+    const [iw, ih] = imageSize(assets.logoImage);
+    return iw && ih ? (iw / ih) * size : 0;
+  }
+  const triW = size * 1.08;
+  if (!lg.text) return triW;
+  ctx.font = `500 ${size / 0.73}px "JetBrains Mono", "IBM Plex Mono", monospace`;
+  return triW + size * 0.38 + ctx.measureText(lg.text).width;
+}
+
+/** Draws the logo with its left edge at x and vertical center at y. */
+function drawLogoAt(ctx: Ctx, style: Style, assets: RenderAssets, x: number, y: number, size: number, scale: number) {
   const snap = snapper(scale);
   const lg = style.logo;
-  const { x, y, size } = L.logo;
   if (lg.mode === 'image' && assets.logoImage) {
     const [iw, ih] = imageSize(assets.logoImage);
     if (!iw || !ih) return;
@@ -177,6 +201,11 @@ function drawLogo(ctx: Ctx, style: Style, assets: RenderAssets, L: Layout, scale
     ctx.textAlign = 'left';
     ctx.fillText(lg.text, snap(x + triW + size * 0.38), snap(top + triH));
   }
+}
+
+function drawCornerLogo(ctx: Ctx, style: Style, assets: RenderAssets, unit: number, scale: number) {
+  if (!style.logo.show) return;
+  drawLogoAt(ctx, style, assets, style.logo.x * unit, style.logo.y * unit, style.logo.size * unit, scale);
 }
 
 function barValues(peaks: Float32Array | null, n: number): Float32Array {
@@ -330,6 +359,7 @@ function drawBox(ctx: Ctx, style: Style, L: Layout, seg: Segment, box: BoxRect, 
 
 // ---------- cache ----------
 
+/** Caches everything that doesn't move (background, glow, grid, logos, labels) as one bitmap. */
 export class StaticLayerCache {
   private canvas: AnyCanvas | null = null;
   private key: unknown[] = [];
@@ -339,8 +369,9 @@ export class StaticLayerCache {
     this.key = [];
   }
 
-  get(state: RenderState, scale: number, L: Layout, boxes: BoxRect[]): AnyCanvas {
-    const key = [state.style, state.segments, state.duration, state.assets.peaks, state.assets.logoImage, state.assets.bgImage, scale];
+  get(state: RenderState, scale: number, draw: (ctx: Ctx) => void): AnyCanvas {
+    const a = state.assets;
+    const key = [state.style, state.segments, state.duration, state.tpl, a.peaks, a.logoImage, a.bgImage, a.images, scale];
     if (this.canvas && key.every((k, i) => k === this.key[i])) return this.canvas;
     this.key = key;
     const { style } = state;
@@ -352,84 +383,179 @@ export class StaticLayerCache {
     ctx.clearRect(0, 0, w, h);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     if (style.background.type !== 'video') drawBackground(ctx, style, state.assets, null);
-    drawGlow(ctx, style, L);
-    drawGrid(ctx, style, L);
-    if (style.card.shadow) {
-      ctx.save();
-      ctx.shadowColor = 'rgba(0,0,0,0.35)';
-      ctx.shadowBlur = 48 * L.s * scale;
-      ctx.shadowOffsetY = 14 * L.s * scale;
-      ctx.fillStyle = '#000';
-      roundRect(ctx, L.card.x, L.card.y, L.card.w, L.card.h, style.card.radius * L.s);
-      ctx.fill();
-      ctx.restore();
-    }
-    this.wave = null;
-    if (style.waveform.on) {
-      this.wave = computeWave(style, state.assets, L);
-      ctx.fillStyle = hexToRgba(style.waveform.color, style.waveform.opacity);
-      drawBars(ctx, this.wave, 0, this.wave.xs.length);
-    }
-    drawLogo(ctx, style, state.assets, L, scale);
-    state.segments.forEach((seg, i) => drawBox(ctx, style, L, seg, boxes[i], false, scale));
+    draw(ctx);
     return this.canvas;
+  }
+}
+
+function drawShadow(ctx: Ctx, style: Style, r: Rect, unit: number, scale: number) {
+  if (!style.card.shadow) return;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.35)';
+  ctx.shadowBlur = 48 * unit * scale;
+  ctx.shadowOffsetY = 14 * unit * scale;
+  ctx.fillStyle = '#000';
+  roundRect(ctx, r.x, r.y, r.w, r.h, style.card.radius * unit);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A rounded video card: the frame cover-fitted inside, optional border on top. */
+function drawCard(ctx: Ctx, style: Style, r: Rect, frame: FrameSource | null, unit: number, dim = 0) {
+  const cr = style.card.radius * unit;
+  ctx.save();
+  roundRect(ctx, r.x, r.y, r.w, r.h, cr);
+  ctx.clip();
+  ctx.fillStyle = '#0b0b0f';
+  ctx.fillRect(r.x, r.y, r.w, r.h);
+  if (frame) drawFitted(ctx, frame.image, frame.width, frame.height, r, 'cover');
+  if (dim > 0) {
+    ctx.fillStyle = `rgba(0,0,0,${dim})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+  }
+  ctx.restore();
+  if (style.card.border) {
+    const bw = style.card.borderWidth * unit;
+    roundRect(ctx, r.x + bw / 2, r.y + bw / 2, r.w - bw, r.h - bw, cr);
+    ctx.lineWidth = bw;
+    ctx.strokeStyle = hexToRgba(style.card.borderColor, style.card.borderOpacity);
+    ctx.stroke();
   }
 }
 
 // ---------- the one renderer ----------
 
 /**
- * Draws one complete frame. Used by both the preview and the export, so they are identical.
+ * Draws one complete frame. Used by the preview, the export and screenshots, so they are identical.
  * `ctx` must already be sized to style.canvas * scale.
  */
-export function renderFrame(
-  ctx: Ctx,
-  state: RenderState,
-  time: number,
-  video: FrameSource | null,
-  cache: StaticLayerCache,
-  scale = 1,
-  bgVideo: FrameSource | null = null,
-) {
-  const { style, segments, duration } = state;
-  const L = computeLayout(style);
-  const boxes = computeBoxes(segments, L.row.x, L.row.w, style.boxes.gap * L.s);
-  const fps = style.fps === 29.97 ? 30000 / 1001 : 30;
-  const pt = playheadTime(time, duration, fps);
-
+export function renderFrame(ctx: Ctx, state: RenderState, time: number, frames: Frames, cache: StaticLayerCache, scale = 1) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   if ('textRendering' in ctx) (ctx as CanvasRenderingContext2D).textRendering = 'geometricPrecision';
-
-  if (style.background.type === 'video') {
+  if (state.style.background.type === 'video') {
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    drawBackground(ctx, style, state.assets, bgVideo);
+    drawBackground(ctx, state.style, state.assets, frames.bg ?? null);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
-  const layer = cache.get(state, scale, L, boxes);
+  if (state.tpl.id === 'breakdown') renderBreakdown(ctx, state, time, frames.main ?? null, cache, scale);
+  else renderTemplate(ctx, state, time, frames, cache, scale);
+}
+
+function drawHeadings(ctx: Ctx, style: Style, L: TemplateLayout, scale: number) {
+  const snap = snapper(scale);
+  const h = style.heading;
+  for (const hd of L.headings) {
+    if (!hd.text) continue;
+    ctx.font = fontString(hd.size, style.boxes.font, h.weight);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = h.color;
+    const w = ctx.measureText(hd.text).width;
+    ctx.fillText(hd.text, snap(hd.x - w / 2), snap(hd.y));
+  }
+}
+
+function placeholder(ctx: Ctx, style: Style, r: Rect, text: string, unit: number) {
+  ctx.font = fontString(Math.max(10, 22 * unit), style.boxes.font, 500);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText(text, r.x + r.w / 2, r.y + r.h / 2);
+}
+
+function renderTemplate(ctx: Ctx, state: RenderState, time: number, frames: Frames, cache: StaticLayerCache, scale: number) {
+  const { style, tpl, assets } = state;
+  const L = computeTemplateLayout(style, tpl);
+  const u = L.s;
+  const { w: W, h: H } = style.canvas;
+
+  const layer = cache.get(state, scale, (c) => {
+    drawGlow(c, style, W / 2, H * 0.75, u);
+    drawGrid(c, style, u);
+    for (const r of [...L.tiles, ...(L.main ? [L.main] : []), ...(L.secondary ? [L.secondary] : [])]) drawShadow(c, style, r, u, scale);
+    drawCornerLogo(c, style, assets, u, scale);
+    if (L.logo) {
+      // Center logo, as big as the cell allows.
+      let size = Math.min(style.logo.size * u, L.logo.h * 0.42);
+      const w = logoWidth(c, style, assets, size);
+      if (w > L.logo.w * 0.82) size *= (L.logo.w * 0.82) / w;
+      const lw = logoWidth(c, style, assets, size);
+      drawLogoAt(c, style, assets, L.logo.x + (L.logo.w - lw) / 2, L.logo.y + L.logo.h / 2, size, scale);
+    }
+    drawHeadings(c, style, L, scale);
+  });
   ctx.drawImage(layer, 0, 0);
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
-  // Video card
-  const cr = style.card.radius * L.s;
-  ctx.save();
-  roundRect(ctx, L.card.x, L.card.y, L.card.w, L.card.h, cr);
-  ctx.clip();
-  ctx.fillStyle = '#0b0b0f';
-  ctx.fillRect(L.card.x, L.card.y, L.card.w, L.card.h);
-  if (video) drawFitted(ctx, video.image, video.width, video.height, L.card, 'cover');
-  ctx.restore();
-  if (style.card.border) {
-    const bw = style.card.borderWidth * L.s;
-    roundRect(ctx, L.card.x + bw / 2, L.card.y + bw / 2, L.card.w - bw, L.card.h - bw, cr);
-    ctx.lineWidth = bw;
-    ctx.strokeStyle = hexToRgba(style.card.borderColor, style.card.borderOpacity);
-    ctx.stroke();
+  L.tiles.forEach((r, i) => {
+    const f = frames.clips?.[i] ?? null;
+    drawCard(ctx, style, r, f, u);
+    if (!f && !tpl.clips[i]) placeholder(ctx, style, r, `Highlight ${i + 1}`, u);
+  });
+  if (L.secondary) {
+    drawCard(ctx, style, L.secondary, frames.secondary ?? null, u);
+    if (!frames.secondary) placeholder(ctx, style, L.secondary, tpl.secondary.sourceId ? '' : 'Upload the BTS video', u);
   }
+  if (L.main) drawCard(ctx, style, L.main, frames.main ?? null, u);
 
+  if (L.strip) {
+    const st = L.strip;
+    const segs = state.segments;
+    const pos = storyboardPosition(
+      segs.map((x) => x.start),
+      time,
+    );
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(st.band.x, st.band.y - 2, st.band.w, st.band.h + 4);
+    ctx.clip();
+    const step = st.frameW + st.gap;
+    if (segs.length === 0) {
+      const r = { x: st.centerX - st.frameW / 2, y: st.band.y, w: st.frameW, h: st.frameH };
+      drawCard(ctx, style, r, null, u);
+      placeholder(ctx, style, r, 'Add storyboard frames', u);
+    }
+    segs.forEach((seg, k) => {
+      const x = st.centerX + (k - pos) * step - st.frameW / 2;
+      if (x + st.frameW < st.band.x || x > st.band.x + st.band.w) return;
+      const img = seg.assetId ? assets.images?.[seg.assetId] : undefined;
+      const r = { x, y: st.band.y, w: st.frameW, h: st.frameH };
+      const f = img ? { image: img, width: imageSize(img)[0], height: imageSize(img)[1] } : null;
+      drawCard(ctx, style, r, f, u, Math.min(1, Math.abs(k - pos)) * 0.55);
+      if (!f) placeholder(ctx, style, r, seg.label || `Frame ${k + 1}`, u);
+    });
+    ctx.restore();
+  }
+}
+
+function renderBreakdown(ctx: Ctx, state: RenderState, time: number, video: FrameSource | null, cache: StaticLayerCache, scale: number) {
+  const { style, segments, duration } = state;
+  const L = computeLayout(style);
+  const boxes = computeBoxes(segments, L.row.x, L.row.w, style.boxes.gap * L.s);
+  const fps = style.fps === 29.97 ? 30000 / 1001 : 30;
+  const pt = playheadTime(time, duration, fps);
+
+  const layer = cache.get(state, scale, (c) => {
+    drawGlow(c, style, L.row.x + L.row.w / 2, L.row.y + L.row.h / 2, L.s);
+    drawGrid(c, style, L.s);
+    drawShadow(c, style, L.card, L.s, scale);
+    cache.wave = null;
+    if (style.waveform.on) {
+      cache.wave = computeWave(style, state.assets, L);
+      c.fillStyle = hexToRgba(style.waveform.color, style.waveform.opacity);
+      drawBars(c, cache.wave, 0, cache.wave.xs.length);
+    }
+    if (style.logo.show) drawLogoAt(c, style, state.assets, L.logo.x, L.logo.y, L.logo.size, scale);
+    segments.forEach((seg, i) => drawBox(c, style, L, seg, boxes[i], false, scale));
+  });
+  ctx.drawImage(layer, 0, 0);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+
+  drawCard(ctx, style, L.card, video, L.s);
   if (segments.length === 0) return;
   const px = playheadX(segments, boxes, pt);
 

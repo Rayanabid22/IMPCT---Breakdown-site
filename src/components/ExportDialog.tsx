@@ -14,11 +14,13 @@ import {
   type Quality,
 } from '../media/export';
 import { formatTime } from '../lib/time';
+import { MAIN } from '../types';
 
 interface Props {
   state: RenderState;
   projectName: string;
-  videoFile: Blob | null;
+  /** Source files by id (MAIN = the launch video). */
+  sources: Record<string, Blob>;
   bgVideoFile: Blob | null;
   bgVideoEl: HTMLVideoElement | null;
   fps: 29.97 | 30;
@@ -61,14 +63,16 @@ function fmtEta(s: number | null) {
   return `${Math.floor(s / 60)}m ${Math.ceil(s % 60)}s left`;
 }
 
-export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVideoEl, fps, onFpsChange, onClose, onBusyChange, onFrame }: Props) {
+export function ExportDialog({ state, projectName, sources, bgVideoFile, bgVideoEl, fps, onFpsChange, onClose, onBusyChange, onFrame }: Props) {
   const [quality, setQuality] = useState<Quality>('high');
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<{ message: string; hint: string } | null>(null);
   const [result, setResult] = useState<{ url: string; name: string; size: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const videoFile = sources[MAIN] ?? null;
   const webcodecs = hasWebCodecs();
-  const recorder = pickRecorderMime();
+  // The real-time fallback records one video element, so it only handles the breakdown template.
+  const recorder = state.tpl.id === 'breakdown' ? pickRecorderMime() : null;
   const [scale, setScale] = useState<ExportScale>(() => (readPref('bs:exportScale') === '1' ? 1 : 2));
   const [can4k, setCan4k] = useState<boolean | null>(null);
   const fourK = outputSize(state.style.canvas, 2);
@@ -113,7 +117,7 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
     let lastFrame = 0;
     const job = {
       state,
-      videoFile,
+      sources,
       bgVideoFile,
       quality,
       scale: effectiveScale,
@@ -253,7 +257,9 @@ export function ExportDialog({ state, projectName, videoFile, bgVideoFile, bgVid
                     ]
                       .filter(Boolean)
                       .join(' ')
-                  : "Your browser can't export video. Please open this page in Chrome or Edge."}
+                  : state.tpl.id === 'breakdown'
+                    ? "Your browser can't export video. Please open this page in Chrome or Edge."
+                    : "This template needs Chrome or Edge to export. Please open this page in one of them."}
               </p>
             )}
             {!videoFile && <p className="warn">Upload the video for this project first.</p>}

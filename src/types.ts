@@ -5,6 +5,8 @@ export interface Segment {
   end: number;
   /** Optional label size override, in reference px (1440x1080 stage). */
   fontSize?: number;
+  /** Storyboard template: the frame image shown for this section. */
+  assetId?: string;
 }
 
 export type BackgroundType = 'solid' | 'gradient' | 'image' | 'video';
@@ -47,6 +49,8 @@ export interface Style {
     highlight: boolean;
   };
   logo: {
+    /** Corner logo. The 6-8 highlights template always shows the logo in its center cell. */
+    show: boolean;
     mode: 'text' | 'image';
     text: string;
     assetId: string | null;
@@ -80,6 +84,10 @@ export interface Style {
     activeHighlight: boolean;
   };
   playhead: { color: string; size: number; lineWidth: number };
+  /** Multi-card templates: space between cards and around the edge, in px at 1080 reference. */
+  layout: { gap: number; margin: number };
+  /** Titles above cards (Storyboard:, Result:, BTS:). */
+  heading: { size: number; color: string; weight: 400 | 500 | 600; gap: number };
   /** Gap between the bottom of the video card and the top of the segment row, reference px. */
   rowOffset: number;
 }
@@ -92,7 +100,47 @@ export interface Project {
   segments: Segment[];
   style: Style;
   presetId: string | null;
+  tpl: TemplateState;
   updatedAt: number;
+}
+
+export type TemplateId = 'breakdown' | 'grid4' | 'ring' | 'launch2' | 'grid12' | 'storyboard' | 'bts';
+
+/** The project video is source 'main'; uploaded clips are assets with their own ids. */
+export const MAIN = 'main';
+
+/** A piece of a source video, looped for as long as the output runs. */
+export interface Clip {
+  id: string;
+  sourceId: string;
+  start: number;
+  end: number;
+}
+
+export interface SourceInfo {
+  name: string;
+  duration: number;
+}
+
+export interface TemplateState {
+  id: TemplateId;
+  /** Output length for the highlight grids. Other templates last as long as the main video. */
+  duration: number;
+  /** Highlight tiles (grids, ring) or the two loops under the launch video. */
+  clips: Clip[];
+  /** 6 to 8 for the ring template. */
+  ringCount: number;
+  /** Launch + 2 highlights: loop length of each highlight. */
+  loopLength: number;
+  /** Highlight grids: which source the soundtrack comes from, and where in it to start. */
+  audio: { sourceId: string | null; offset: number };
+  /** BTS template: the behind-the-scenes recording, and its offset from the result video. */
+  secondary: { sourceId: string | null; offset: number };
+  headings: { top: string; bottom: string };
+  /** BTS template: put the result on top instead. */
+  swap: boolean;
+  /** Durations and names of uploaded clips, keyed by asset id. */
+  sources: Record<string, SourceInfo>;
 }
 
 /** Things the renderer needs beyond the project itself. */
@@ -101,6 +149,8 @@ export interface RenderAssets {
   peaks: Float32Array | null;
   logoImage: CanvasImageSource | null;
   bgImage: CanvasImageSource | null;
+  /** Storyboard frame images by asset id. */
+  images?: Record<string, CanvasImageSource>;
 }
 
 export interface FrameSource {

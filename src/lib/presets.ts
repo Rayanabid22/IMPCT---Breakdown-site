@@ -26,7 +26,7 @@ const base: Style = {
   glow: { on: true, color: '#FFD24A', intensity: 0.75, radius: 360, offsetY: 30, stretch: 2.2 },
   grid: { on: false, size: 2, spacing: 12, opacity: 0.06 },
   waveform: { on: true, color: '#FFFFFF', opacity: 0.45, barWidth: 3, spacing: 10, height: 100, highlight: true },
-  logo: { mode: 'text', text: 'Impct.', assetId: null, size: 38, x: 54, y: 52, color: '#FFFFFF' },
+  logo: { show: true, mode: 'text', text: 'Impct.', assetId: null, size: 38, x: 54, y: 52, color: '#FFFFFF' },
   card: { radius: 14, border: false, borderColor: '#FFFFFF', borderOpacity: 0.35, borderWidth: 1.5, shadow: true },
   boxes: {
     fillColor: '#FFFFFF',
@@ -45,6 +45,8 @@ const base: Style = {
     activeHighlight: false,
   },
   playhead: { color: '#FFFFFF', size: 24, lineWidth: 1.5 },
+  layout: { gap: 14, margin: 28 },
+  heading: { size: 44, color: '#FFFFFF', weight: 400, gap: 20 },
   rowOffset: 65,
 };
 

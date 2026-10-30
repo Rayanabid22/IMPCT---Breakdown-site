@@ -891,3 +891,145 @@ input[type='color'] {
 .start-hint {
   margin: -4px 0 12px;
 }
+
+/* ---------- templates ---------- */
+
+.template-grid {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+.preset-card .small-text {
+  font-size: 12px;
+  line-height: 1.35;
+}
+.hl-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.hl-settings .field select,
+.hl-settings .field input:not([type='range']) {
+  max-width: 100%;
+}
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+.lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lane {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.lane-num {
+  width: 22px;
+  height: 22px;
+  margin-top: 4px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  flex: none;
+}
+.lane-main {
+  flex: 1;
+  min-width: 0;
+}
+.lane-bar {
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1b1c24;
+  touch-action: none;
+  user-select: none;
+}
+.lane-bar .thumbs {
+  position: absolute;
+  inset: 0;
+  opacity: 0.4;
+}
+.lane-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 2px solid var(--accent);
+  background: rgba(255, 90, 0, 0.18);
+  border-radius: 5px;
+  cursor: grab;
+}
+.lane-window.dragging {
+  cursor: grabbing;
+  background: rgba(255, 90, 0, 0.3);
+}
+.lane-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+}
+.lane-edge.left {
+  left: -5px;
+}
+.lane-edge.right {
+  right: -5px;
+}
+.lane-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.lane-src {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.time-input.small {
+  width: 78px;
+  height: 26px;
+  font-size: 12px;
+}
+.seg-frame {
+  display: grid;
+  place-items: center;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px dashed var(--line-2);
+  background: #101117;
+  cursor: pointer;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--muted);
+}
+.seg-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.btn.camera svg {
+  display: block;
+}
+
+.stage-busy {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 12px;
+  color: #ddd;
+  pointer-events: none;
+}

@@ -13,9 +13,13 @@ interface Props {
   onSplit: () => void;
   onDelete: (i: number) => void;
   locked: boolean;
+  /** Storyboard: show each section's frame image (by asset id) with a button to replace it. */
+  frames?: { urls: Record<string, string>; onPick: (i: number, f: File) => void };
+  title?: string;
+  addLabel?: string;
 }
 
-export function SegmentList({ player, segments, selected, onSelect, onChange, onSplit, onDelete, locked }: Props) {
+export function SegmentList({ player, segments, selected, onSelect, onChange, onSplit, onDelete, locked, frames, title = 'Sections', addLabel = '+ Add section' }: Props) {
   const [messages, setMessages] = useState<Record<string, string>>({});
 
   const report = (id: string, r: EditResult, key?: string) => {
@@ -31,9 +35,9 @@ export function SegmentList({ player, segments, selected, onSelect, onChange, on
   return (
     <div className="segment-list">
       <div className="panel-head">
-        <span className="panel-title">Sections</span>
-        <button type="button" className="btn small" onClick={onSplit} disabled={locked} title="Split the selected section at the playhead (S)">
-          + Add section
+        <span className="panel-title">{title}</span>
+        <button type="button" className="btn small" onClick={onSplit} disabled={locked || segments.length === 0} title="Split the selected section at the playhead (S)">
+          {addLabel}
         </button>
       </div>
       <div className="seg-table" role="table" aria-label="Sections">
@@ -42,7 +46,7 @@ export function SegmentList({ player, segments, selected, onSelect, onChange, on
           <span role="columnheader">Start</span>
           <span role="columnheader">End</span>
           <span role="columnheader">Length</span>
-          <span role="columnheader">Size</span>
+          <span role="columnheader">{frames ? 'Frame' : 'Size'}</span>
           <span role="columnheader" className="visually-hidden">
             Actions
           </span>
@@ -78,6 +82,22 @@ export function SegmentList({ player, segments, selected, onSelect, onChange, on
                 onButton={() => report(s.id, setSegmentEnd(segments, i, player.time))}
               />
               <span className="seg-dur">{(s.end - s.start).toFixed(2)}s</span>
+              {frames ? (
+                <label className="seg-frame" title="Replace this frame's image" tabIndex={0} role="button" onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.currentTarget.querySelector('input') as HTMLInputElement).click()}>
+                  {s.assetId && frames.urls[s.assetId] ? <img src={frames.urls[s.assetId]} alt="" /> : <span>Image</span>}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="visually-hidden"
+                    disabled={locked}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) frames.onPick(i, f);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              ) : (
               <input
                 className="seg-size"
                 type="number"
@@ -101,6 +121,7 @@ export function SegmentList({ player, segments, selected, onSelect, onChange, on
                   );
                 }}
               />
+              )}
               <button
                 type="button"
                 className="btn icon-btn danger"

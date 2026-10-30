@@ -1,4 +1,4 @@
-import type { Style } from '../types';
+import type { Style, TemplateId } from '../types';
 import { CANVAS_SIZES } from '../lib/layout';
 import { FONTS } from '../lib/presets';
 import { ColorField, FileButton, Section, Segmented, SelectField, Slider, Toggle, pct } from './controls';
@@ -7,6 +7,7 @@ export type SetStyle = <K extends keyof Style>(section: K, patch: Style[K] exten
 
 interface Props {
   style: Style;
+  template: TemplateId;
   setStyle: SetStyle;
   onBackgroundFile: (f: File) => void;
   onLogoFile: (f: File) => void;
@@ -14,7 +15,9 @@ interface Props {
   logoAssetName: string | null;
 }
 
-export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAssetName, logoAssetName }: Props) {
+export function StylePanel({ style, template, setStyle, onBackgroundFile, onLogoFile, bgAssetName, logoAssetName }: Props) {
+  const breakdown = template === 'breakdown';
+  const titles = template === 'storyboard' || template === 'bts';
   const bg = style.background;
   const sizeValue = `${style.canvas.w}x${style.canvas.h}`;
   return (
@@ -104,7 +107,7 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
         )}
       </Section>
 
-      <Section title="Glow behind sections">
+      <Section title={breakdown ? 'Glow behind sections' : 'Glow'} defaultOpen={breakdown}>
         <Toggle label="Show glow" checked={style.glow.on} onChange={(on) => setStyle('glow', { on })} />
         {style.glow.on && (
           <>
@@ -128,6 +131,7 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
         )}
       </Section>
 
+{breakdown && (
       <Section title="Waveform" defaultOpen={false}>
         <Toggle label="Show waveform" checked={style.waveform.on} onChange={(on) => setStyle('waveform', { on })} hint="Bar heights come from the video's real audio." />
         {style.waveform.on && (
@@ -141,8 +145,10 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
           </>
         )}
       </Section>
+)}
 
-      <Section title="Logo" defaultOpen={false}>
+      <Section title={template === 'ring' ? 'Logo (center)' : 'Logo'} defaultOpen={false}>
+        {template !== 'ring' && <Toggle label="Show logo in the corner" checked={style.logo.show} onChange={(show) => setStyle('logo', { show })} />}
         <Segmented
           value={style.logo.mode}
           options={[
@@ -168,7 +174,7 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
         <Slider label="Top" min={10} max={400} value={style.logo.y} onChange={(y) => setStyle('logo', { y })} />
       </Section>
 
-      <Section title="Video card" defaultOpen={false}>
+      <Section title={breakdown ? 'Video card' : 'Cards'} defaultOpen={false}>
         <Slider label="Corner radius" min={0} max={60} value={style.card.radius} onChange={(radius) => setStyle('card', { radius })} />
         <Toggle label="Border" checked={style.card.border} onChange={(border) => setStyle('card', { border })} />
         {style.card.border && (
@@ -181,6 +187,8 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
         <Toggle label="Shadow" checked={style.card.shadow} onChange={(shadow) => setStyle('card', { shadow })} />
       </Section>
 
+{breakdown ? (
+        <>
       <Section title="Section boxes" defaultOpen={false}>
         <Slider label="Row position" min={20} max={200} value={style.rowOffset} onChange={(rowOffset) => setStyle('rowOffset', rowOffset)} hint="Space between the video and the boxes." />
         <ColorField label="Fill color" value={style.boxes.fillColor} onChange={(fillColor) => setStyle('boxes', { fillColor })} />
@@ -212,6 +220,31 @@ export function StylePanel({ style, setStyle, onBackgroundFile, onLogoFile, bgAs
         <Slider label="Triangle size" min={10} max={48} value={style.playhead.size} onChange={(size) => setStyle('playhead', { size })} />
         <Slider label="Line width" min={0.5} max={6} step={0.5} value={style.playhead.lineWidth} onChange={(lineWidth) => setStyle('playhead', { lineWidth })} />
       </Section>
+        </>
+      ) : (
+        <Section title="Layout" defaultOpen={false}>
+          <Slider label="Gap between cards" min={0} max={80} value={style.layout.gap} onChange={(gap) => setStyle('layout', { gap })} />
+          <Slider label="Edge margin" min={0} max={160} value={style.layout.margin} onChange={(margin) => setStyle('layout', { margin })} />
+        </Section>
+      )}
+      {titles && (
+        <Section title="Titles" defaultOpen={false}>
+          <SelectField label="Font" value={style.boxes.font} options={FONTS.map((f) => ({ value: f, label: f }))} onChange={(font) => setStyle('boxes', { font })} />
+          <Slider label="Size" min={16} max={90} value={style.heading.size} onChange={(size) => setStyle('heading', { size })} />
+          <Segmented
+            label="Weight"
+            value={String(style.heading.weight) as '400' | '500' | '600'}
+            options={[
+              { value: '400', label: 'Regular' },
+              { value: '500', label: 'Medium' },
+              { value: '600', label: 'Semibold' },
+            ]}
+            onChange={(w) => setStyle('heading', { weight: Number(w) as 400 | 500 | 600 })}
+          />
+          <ColorField label="Color" value={style.heading.color} onChange={(color) => setStyle('heading', { color })} />
+          <Slider label="Space under title" min={0} max={60} value={style.heading.gap} onChange={(gap) => setStyle('heading', { gap })} />
+        </Section>
+      )}
     </div>
   );
 }

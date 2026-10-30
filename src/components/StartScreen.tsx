@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import type { Preset } from '../lib/presets';
+import type { TemplateId } from '../types';
+import { TEMPLATES, templateStyle } from '../lib/templates';
 import type { RecentEntry } from '../store/storage';
 import { formatTime } from '../lib/time';
 import { FileButton } from './controls';
@@ -9,6 +11,8 @@ interface Props {
   presets: Preset[];
   presetId: string | null;
   onPresetChange: (id: string | null) => void;
+  template: TemplateId;
+  onTemplateChange: (id: TemplateId) => void;
   onVideo: (f: File) => void;
   recent: RecentEntry[];
   onOpenRecent: (id: string) => void;
@@ -20,14 +24,17 @@ interface Props {
 
 export const VIDEO_ACCEPT = 'video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm,.m4v';
 
-export function StartScreen({ presets, presetId, onPresetChange, onVideo, recent, onOpenRecent, onRemoveRecent, onImportJson, error, browserNote }: Props) {
+const STORYBOARD_LABELS = ['Frame 1', 'Frame 2', 'Frame 3', 'Frame 4'];
+const tplStyles = Object.fromEntries(TEMPLATES.map((t) => [t.id, templateStyle(t.id)]));
+
+export function StartScreen({ presets, presetId, onPresetChange, template, onTemplateChange, onVideo, recent, onOpenRecent, onRemoveRecent, onImportJson, error, browserNote }: Props) {
   const [over, setOver] = useState(false);
   return (
     <div className="start">
       <header className="start-head">
         <div className="brand">
           <span className="brand-mark" aria-hidden />
-          Breakdown Studio
+          IMPCT Studio
         </div>
         <FileButton label="Open project file (.json)" accept="application/json,.json" onFile={onImportJson} className="btn ghost" />
       </header>
@@ -58,7 +65,9 @@ export function StartScreen({ presets, presetId, onPresetChange, onVideo, recent
           }}
         />
         <span className="drop-title">Drop your launch video here</span>
-        <span className="drop-sub">or click to choose a file. MP4, MOV or WebM. It stays on this computer.</span>
+        <span className="drop-sub">
+          Making a <strong>{TEMPLATES.find((t) => t.id === template)?.name}</strong> post. Or click to choose a file. MP4, MOV or WebM. It stays on this computer.
+        </span>
       </label>
       {error && (
         <p className="error-line" role="alert">
@@ -66,6 +75,19 @@ export function StartScreen({ presets, presetId, onPresetChange, onVideo, recent
         </p>
       )}
 
+      <h2 className="start-h2">Template</h2>
+      <div className="preset-grid template-grid" role="radiogroup" aria-label="Template">
+        {TEMPLATES.map((t) => (
+          <button key={t.id} type="button" role="radio" aria-checked={template === t.id} className={`preset-card ${template === t.id ? 'active' : ''}`} onClick={() => onTemplateChange(t.id)}>
+            <PresetThumb style={t.id === 'breakdown' ? presets[0].style : tplStyles[t.id]} labels={t.id === 'storyboard' ? STORYBOARD_LABELS : presets[0].labels} template={t.id} />
+            <span>{t.name}</span>
+            <span className="muted small-text">{t.blurb}</span>
+          </button>
+        ))}
+      </div>
+
+      {template === 'breakdown' && (
+      <>
       <h2 className="start-h2">Start from a look</h2>
       <p className="hint start-hint">
         {presetId ? 'The video will start with this look and its section names.' : 'Optional. With no look picked, you get the orange look with Hook, Body, Features, CTA.'}
@@ -78,6 +100,8 @@ export function StartScreen({ presets, presetId, onPresetChange, onVideo, recent
           </button>
         ))}
       </div>
+      </>
+      )}
 
       {recent.length > 0 && (
         <>

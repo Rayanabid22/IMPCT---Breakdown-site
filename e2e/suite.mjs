@@ -107,8 +107,9 @@ async function seek(page, t) {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(r, tt);
     r.dispatchEvent(new Event('input', { bubbles: true }));
   }, t);
-  await page.waitForFunction(() => !document.querySelector('video')?.seeking, null, { timeout: 5000 }).catch(() => {});
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(150);
+  await page.waitForFunction(() => !document.querySelector('.stage[data-busy]'), null, { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(300);
 }
 const times = (p) => p.$$eval('.time-input', (els) => els.map((e) => e.value));
 const labels = (p) => p.$$eval('.seg-label', (els) => els.map((e) => e.value));
@@ -620,6 +621,235 @@ test('rendering idles when paused and runs while playing', async () => {
   await page.click('.segmented.small button:has-text("Half")');
   const w = await page.$eval('.stage canvas', (c) => c.width);
   check(w === 720, 'Half preview renders at half resolution', `${w}px`);
+  await page.context().close();
+});
+
+
+// ================= templates =================
+
+async function startTemplate(page, name, file, preset) {
+  await page.click(`.template-grid .preset-card:has-text("${name}")`);
+  if (preset) await page.click(`.preset-card:has-text("${preset}")`);
+  await page.setInputFiles('.dropzone input[type=file]', fx(file));
+  await waitReady(page);
+  await page.waitForTimeout(800);
+}
+const crop = (x, y, w, h) => `crop=${w}:${h}:${Math.round(x)}:${Math.round(y)},`;
+/** Times (s) at which a region of the export flashes white. */
+const flashesIn = (file, x, y, w, h, fps = FPS) => flashTimes(file, crop(x, y, w, h), fps).times;
+async function screenshot(page, name) {
+  const dl = page.waitForEvent('download', { timeout: 30000 });
+  await page.click('button[aria-label="Save this frame as a 4K PNG"]');
+  const d = await dl;
+  const file = path.join(OUT, `${name}.png`);
+  await d.saveAs(file);
+  const p = probe(file);
+  return { file, w: p.streams[0].width, h: p.streams[0].height, filename: d.suggestedFilename() };
+}
+
+test('4 Highlights: each tile plays its own part, export, 4K screenshot', async () => {
+  const page = await newPage();
+  await startTemplate(page, '4 Highlights', 'test30.mp4');
+  const lanes = await page.$$eval('.lane-meta .time-input', (els) => els.map((e) => e.value));
+  check(lanes.join(',') === '0:00.00,0:07.50,0:07.50,0:15.00,0:15.00,0:22.50,0:22.50,0:30.00', 'split evenly into 4', lanes.join(','));
+  check((await timecode(page)).includes('0:07.50'), 'post length = a quarter of the video', (await timecode(page)).trim());
+  const shot = await screenshot(page, 'grid4-shot');
+  check(shot.w === 3840 && shot.h === 2160 && shot.filename.endsWith('.png'), 'camera saves a 4K PNG', `${shot.w}x${shot.h} ${shot.filename}`);
+  const r = await exportVideo(page, 'grid4');
+  const p = probe(r.file);
+  const v = videoStream(p);
+  check(v.width === 1920 && v.height === 1080, '1920x1080', `${v.width}x${v.height}`);
+  check(Math.abs(Number(v.nb_frames) - Math.round(7.5 * FPS)) <= 1, 'frames = post length', v.nb_frames);
+  check(Math.abs(Number(audioStream(p)?.duration) - 7.5) < 0.1, 'audio cut to the post length', audioStream(p)?.duration);
+  // Tile i shows the source from 7.5*i, so its flashes land at (whole seconds - 7.5*i).
+  const cells = [
+    [0, 0],
+    [967, 0],
+    [0, 547],
+    [967, 547],
+  ];
+  const firsts = cells.map(([x, y]) => flashesIn(r.file, x + 270, y + 120, 400, 300)[0]);
+  const want = [0, 0.5, 0, 0.5];
+  check(firsts.every((f, i) => Math.abs(f - want[i]) < 0.04), 'every tile plays its own range', firsts.map((f) => f?.toFixed(3)).join(', '));
+  const d = await wysiwyg(page, r.file, 60);
+  check(d < 6, 'preview matches export', d.toFixed(2));
+  // The 4K screenshot is the same picture as the export at that moment (frame 0 here is a flash, so compare frame 60 instead).
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('4 Highlights compilation: own clips, uploaded music, post length follows clips', async () => {
+  const page = await newPage();
+  await startTemplate(page, '4 Highlights', 'test30.mp4');
+  const own = ['clip.mov', 'noaudio.mp4', 'fps60.mp4', 'rotated.mp4'];
+  for (let i = 0; i < 4; i++) {
+    await page.setInputFiles(`.lane >> nth=${i} >> input[type=file]`, fx(own[i]));
+    await page.waitForFunction((i) => document.querySelectorAll('.lane-src')[i]?.textContent !== 'Launch video', i, { timeout: 10000 });
+  }
+  const srcs = await page.$$eval('.lane-src', (els) => els.map((e) => e.textContent));
+  check(srcs.join(',') === own.join(','), 'each tile uses its own clip', srcs.join(','));
+  check((await timecode(page)).includes('0:20.00'), 'post length grows to the longest clip', (await timecode(page)).trim());
+  await page.setInputFiles('input[accept^="audio"]', fx('music.m4a'));
+  await page.waitForFunction(() => document.querySelector('#audio-src')?.selectedOptions[0]?.textContent === 'music.m4a', null, { timeout: 10000 });
+  check(true, 'uploaded music becomes the sound');
+  await page.waitForTimeout(800);
+  const r = await exportVideo(page, 'grid4-own');
+  const p = probe(r.file);
+  check(Math.abs(Number(videoStream(p).nb_frames) - Math.round(20 * FPS)) <= 1, '20s of frames', videoStream(p).nb_frames);
+  const a = audioStream(p);
+  check(a?.codec_name === 'aac' && Math.abs(Number(a.duration) - 20) < 0.1, 'music track, 20s, AAC', `${a?.codec_name} ${a?.duration}`);
+  // clip.mov (tile 1) flashes on whole seconds from its own start.
+  const f1 = flashesIn(r.file, 270, 120, 400, 300);
+  check(f1[0] < 0.04 && f1.length >= 19, 'tile 1 plays clip.mov from its start', `${f1.length} flashes, first ${f1[0]}`);
+  const d = await wysiwyg(page, r.file, 75);
+  check(d < 7, 'preview matches export', d.toFixed(2));
+  // Survives a reload: clips come back from browser storage.
+  await page.reload();
+  await waitReady(page);
+  await page.waitForTimeout(1500);
+  const after = await page.$$eval('.lane-src', (els) => els.map((e) => e.textContent));
+  check(after.join(',') === own.join(','), 'own clips restored after refresh', after.join(','));
+  const banner = await page.$('.notices .banner:has-text("aren\'t in this browser")');
+  check(!banner, 'no missing-clip warning');
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('6-8 Highlights: count lever, logo in the middle', async () => {
+  const page = await newPage();
+  await startTemplate(page, '6-8 Highlights', 'test30.mp4');
+  check((await page.$$('.lane')).length === 8, 'starts with 8');
+  await page.fill('#ring-count', '6');
+  await page.waitForTimeout(300);
+  check((await page.$$('.lane')).length === 6, 'lever down to 6');
+  await page.fill('#ring-count', '7');
+  await page.waitForTimeout(300);
+  check((await page.$$('.lane')).length === 7, 'lever up to 7');
+  const r = await exportVideo(page, 'ring7', { res: '4K' });
+  const v = videoStream(probe(r.file));
+  check(v.width === 3840 && v.height === 2160, '4K export', `${v.width}x${v.height}`);
+  // The logo cell (middle row, right two thirds) is black with white logo pixels; tiles are elsewhere.
+  const f = rgbFrame(r.file, 20, 384, 216);
+  let white = 0;
+  for (let y = 80; y < 136; y++) for (let x = 140; x < 370; x++) if (f[(y * 384 + x) * 3] > 200 && f[(y * 384 + x) * 3 + 2] > 200) white++;
+  check(white > 40, 'logo drawn in the middle', `${white} logo px`);
+  const d = await wysiwyg(page, r.file, 40);
+  check(d < 6, 'preview matches export', d.toFixed(2));
+  const shot = await screenshot(page, 'ring-shot');
+  check(shot.w === 3840, 'screenshot 4K', `${shot.w}x${shot.h}`);
+  await page.context().close();
+});
+
+test('Launch + 2 Highlights: full video on top, loops below, in sync', async () => {
+  const page = await newPage();
+  await startTemplate(page, 'Launch + 2 Highlights', 'test30.mp4');
+  const before = await page.$$eval('.lane-meta .time-input', (els) => els.map((e) => e.value));
+  await page.click('button:has-text("Shuffle")');
+  const after = await page.$$eval('.lane-meta .time-input', (els) => els.map((e) => e.value));
+  check(before.join() !== after.join(), 'shuffle picks new moments', `${before.join()} -> ${after.join()}`);
+  await page.fill('#sec-Loop-length', '3');
+  await page.press('#sec-Loop-length', 'Enter');
+  await page.waitForTimeout(200);
+  const lens = await page.$$eval('.lane-meta .seg-dur', (els) => els.map((e) => e.textContent));
+  check(lens.every((l) => l === '3.00s'), 'loop length applies to both', lens.join(','));
+  check((await timecode(page)).includes('0:30.00'), 'post is as long as the launch video');
+  const r = await exportVideo(page, 'launch2');
+  const p = probe(r.file);
+  check(Math.abs(Number(videoStream(p).nb_frames) - 899) <= 1, 'all 899 frames', videoStream(p).nb_frames);
+  const mainCrop = crop(130 + 390, 36 + 180, 400, 300);
+  const so = syncOffset(r.file, mainCrop, FPS);
+  check(so.flashes === 30 && so.firstFlash < 0.001 && so.min > -40 && so.max < 40, 'main video in sync with audio', `${so.flashes} flashes, mean ${so.mean.toFixed(1)}ms`);
+  const d = await wysiwyg(page, r.file, 100);
+  check(d < 7, 'preview matches export', d.toFixed(2));
+  await page.context().close();
+});
+
+test('12 Highlights: 4K export of 12 tiles', async () => {
+  const page = await newPage();
+  await startTemplate(page, '12 Highlights', 'test60.mp4');
+  check((await page.$$('.lane')).length === 12, '12 tiles');
+  const r = await exportVideo(page, 'grid12', { res: '4K' });
+  const v = videoStream(probe(r.file));
+  check(v.width === 3840 && v.height === 2160 && Math.abs(Number(v.nb_frames) - Math.round(5 * FPS)) <= 1, '3840x2160, 5s', `${v.width}x${v.height} ${v.nb_frames} frames, ${r.seconds.toFixed(0)}s to export`);
+  const d = await wysiwyg(page, r.file, 40);
+  check(d < 7, 'preview matches export', d.toFixed(2));
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('Storyboard + Result: frames slide in on time', async () => {
+  const page = await newPage();
+  await startTemplate(page, 'Storyboard + Result', 'test30.mp4');
+  await page.setInputFiles('.segment-list input[type=file][multiple]', [1, 2, 3, 4, 5].map((i) => fx(`sb${i}.png`)));
+  await page.waitForSelector('.seg-frame img');
+  const t = await times(page);
+  check((await labels(page)).join(',') === 'sb1,sb2,sb3,sb4,sb5' && t[1] === '0:06.00', 'five frames spread over the video', t.join(','));
+  await page.fill('#head-top', 'Storyboard');
+  const r = await exportVideo(page, 'storyboard');
+  const v = videoStream(probe(r.file));
+  check(v.width === 1080 && v.height === 1080 && Math.abs(Number(v.nb_frames) - 899) <= 1, '1080x1080, all frames', `${v.width}x${v.height} ${v.nb_frames}`);
+  // Center of the strip shows the storyboard frame that is current: sb2 (teal) at 9s, sb4 (dark) at 21s.
+  const colorAt = (n) => {
+    const f = rgbFrame(r.file, n, 1080, 1080);
+    const i = (290 * 1080 + 540) * 3;
+    return [f[i], f[i + 1], f[i + 2]];
+  };
+  const c9 = colorAt(Math.round(9 * FPS));
+  const c21 = colorAt(Math.round(21 * FPS));
+  check(c9[1] > 130 && c9[0] < 90, 'sb2 centered at 0:09', c9.join(','));
+  check(c21[0] < 70 && c21[2] > 60 && c21[2] < 120, 'sb4 centered at 0:21', c21.join(','));
+  const so = syncOffset(r.file, crop(116 + 224, 567 + 90, 400, 300), FPS);
+  check(so.flashes === 30 && so.min > -40 && so.max < 40, 'result video in sync', `mean ${so.mean.toFixed(1)}ms`);
+  const d = await wysiwyg(page, r.file, Math.round(11.8 * FPS));
+  check(d < 6, 'preview matches export mid-slide', d.toFixed(2));
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('BTS + Result: two synced videos, offset, swap', async () => {
+  const page = await newPage();
+  await startTemplate(page, 'BTS + Result', 'test30.mp4');
+  await page.setInputFiles('.segment-list input[type=file]', fx('bts30.mp4'));
+  await page.waitForSelector('text=Replace BTS video');
+  const r = await exportVideo(page, 'bts');
+  const top = flashesIn(r.file, 159 + 180, 100 + 64, 400, 300);
+  const bottom = flashesIn(r.file, 159 + 180, 616 + 64, 400, 300);
+  check(top.length === 30 && bottom.length === 30 && top.every((x, i) => Math.abs(x - bottom[i]) < 0.001), 'BTS and result flash on the same frames', `${top.length}/${bottom.length}`);
+  const f = rgbFrame(r.file, 45, 1080, 1080);
+  let green = 0;
+  for (let y = 100; y < 528; y++) for (let x = 160; x < 920; x++) {
+    const i = (y * 1080 + x) * 3;
+    if (f[i] < 80 && f[i + 1] > 200 && f[i + 2] > 80 && f[i + 2] < 190) green++;
+  }
+  check(green > 300, 'top card shows the BTS (grid lines)', `${green} grid px`);
+  await page.fill('#bts-offset', '0.5');
+  await page.press('#bts-offset', 'Enter');
+  await page.click('#bts-swap');
+  await page.waitForTimeout(300);
+  const r2 = await exportVideo(page, 'bts-offset');
+  const top2 = flashesIn(r2.file, 159 + 180, 100 + 64, 400, 300);
+  const bottom2 = flashesIn(r2.file, 159 + 180, 616 + 64, 400, 300);
+  check(top2[0] < 0.001 && Math.abs(bottom2[0] - 0.5) < 0.04, 'swapped: result on top; BTS shifted by the offset', `top ${top2[0]}, bottom ${bottom2[0]?.toFixed(3)}`);
+  const d = await wysiwyg(page, r2.file, 70);
+  check(d < 6, 'preview matches export', d.toFixed(2));
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
+  await page.context().close();
+});
+
+test('switching templates keeps the project', async () => {
+  const page = await newPage();
+  await upload(page, 'test30.mp4');
+  await (await page.$$('.seg-label'))[0].fill('Opening');
+  await page.selectOption('#template-select', 'grid4');
+  await page.waitForSelector('.lane');
+  check((await page.$$('.lane')).length === 4, 'breakdown to 4 highlights');
+  await page.selectOption('#template-select', 'breakdown');
+  await page.waitForSelector('.seg-label');
+  check((await labels(page))[0] === 'Opening', 'back to breakdown keeps the sections', (await labels(page)).join(','));
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(200);
+  check((await page.$$('.lane')).length === 4, 'undo returns to the previous template');
+  check(page.errors.length === 0, 'no console errors', page.errors.join(' | '));
   await page.context().close();
 });
 

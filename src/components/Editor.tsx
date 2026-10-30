@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Project, Segment, Style } from '../types';
+import { MAIN, type Project, type Segment, type SourceInfo, type Style, type TemplateId, type TemplateState } from '../types';
 import { useHistory, type Doc } from '../store/history';
-import { Player } from '../store/player';
+import { Player, type SlaveDef } from '../store/player';
 import { Preview, type PreviewHandle } from './Preview';
 import { Timeline } from './Timeline';
 import { SegmentList } from './SegmentList';
 import { StylePanel, type SetStyle } from './StylePanel';
 import { ExportDialog } from './ExportDialog';
 import { PresetManager } from './PresetManager';
+import { HighlightsPanel } from './HighlightsPanel';
+import { BtsPanel, StoryboardHead } from './TemplatePanels';
 import { FileButton } from './controls';
 import { VIDEO_ACCEPT } from './StartScreen';
 import { computePeaks, computeThumbnails, type Thumbnails } from '../media/analyze';
-import { activeIndex, deleteSegment, makeEvenSegments, moveBoundary, newId, rescaleSegments, setSegmentEnd, setSegmentStart, splitSegment } from '../lib/segments';
-import { cloneStyle, DEFAULT_LABELS, type Preset } from '../lib/presets';
+import { activeIndex, deleteSegment, makeEvenSegments, MIN_SEGMENT, moveBoundary, newId, rescaleSegments, setSegmentEnd, setSegmentStart, splitSegment } from '../lib/segments';
+import { cloneStyle, DEFAULT_LABELS, ORANGE, type Preset } from '../lib/presets';
+import { clipCount, clipTime, defaultTemplateState, initTemplate, isHighlights, outputDuration, rescaleClips, TEMPLATES, templateStyle, usesSegments } from '../lib/templates';
 import { fpsValue } from '../lib/time';
 import { assetKey, getBlob, putBlob, saveProject, storeProjectVideo } from '../store/storage';
 import { buildProjectFile, downloadJson, readProjectFile } from '../store/projectFile';
-import type { RenderState } from '../render/renderFrame';
+import type { Frames, RenderState } from '../render/renderFrame';
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
 
 interface Props {
@@ -36,9 +39,26 @@ export function isVideoFile(f: File) {
   return f.type.startsWith('video/') || /\.(mp4|mov|webm|m4v)$/i.test(f.name);
 }
 
-async function readDuration(player: Player, file: Blob): Promise<number> {
-  const d = player.video.duration;
-  if (Number.isFinite(d) && d > 0) return d;
+function isAudioFile(f: File) {
+  return f.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|opus)$/i.test(f.name);
+}
+
+/** Duration of any audio or video file, falling back to demuxing when the browser won't tell. */
+async function mediaDuration(file: Blob): Promise<number> {
+  const viaElement = await new Promise<number>((resolve) => {
+    const v = document.createElement('video');
+    const url = URL.createObjectURL(file);
+    const done = (d: number) => {
+      URL.revokeObjectURL(url);
+      v.removeAttribute('src');
+      resolve(d);
+    };
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => done(v.duration);
+    v.onerror = () => done(NaN);
+    v.src = url;
+  });
+  if (Number.isFinite(viaElement) && viaElement > 0) return viaElement;
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
     return await input.computeDuration();
@@ -67,7 +87,6 @@ function useAsset(id: string | null, kind: 'image' | 'video') {
         } else {
           const v = document.createElement('video');
           v.muted = true;
-          v.loop = true;
           v.playsInline = true;
           v.preload = 'auto';
           v.onloadeddata = () => !cancelled && setAsset({ id, el: v, name: stored.name, blob: stored.blob });
@@ -83,6 +102,81 @@ function useAsset(id: string | null, kind: 'image' | 'video') {
   return asset && asset.id === id ? asset : null;
 }
 
+interface LoadedSource {
+  blob: Blob;
+  url: string;
+}
+
+/** Uploaded clips (and audio) by asset id, loaded from IndexedDB. */
+function useSources(ids: string[]) {
+  const [map, setMap] = useState<Record<string, LoadedSource>>({});
+  const key = [...ids].sort().join('|');
+  useEffect(() => {
+    let cancelled = false;
+    const wanted = key ? key.split('|') : [];
+    setMap((cur) => {
+      const next: Record<string, LoadedSource> = {};
+      for (const [id, v] of Object.entries(cur)) {
+        if (wanted.includes(id)) next[id] = v;
+        else URL.revokeObjectURL(v.url);
+      }
+      return next;
+    });
+    for (const id of wanted) {
+      getBlob(assetKey(id))
+        .then((stored) => {
+          if (!stored || cancelled) return;
+          setMap((cur) => (cur[id] ? cur : { ...cur, [id]: { blob: stored.blob, url: URL.createObjectURL(stored.blob) } }));
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  return map;
+}
+
+/** Storyboard frame images by asset id. */
+function useImages(ids: string[]) {
+  const [state, setState] = useState<{ els: Record<string, HTMLImageElement>; urls: Record<string, string> }>({ els: {}, urls: {} });
+  const key = [...new Set(ids)].sort().join('|');
+  useEffect(() => {
+    let cancelled = false;
+    const wanted = key ? key.split('|') : [];
+    for (const id of wanted) {
+      getBlob(assetKey(id))
+        .then((stored) => {
+          if (!stored || cancelled) return;
+          const url = URL.createObjectURL(stored.blob);
+          const img = new Image();
+          img.onload = () => !cancelled && setState((s) => (s.els[id] ? s : { els: { ...s.els, [id]: img }, urls: { ...s.urls, [id]: url } }));
+          img.src = url;
+        })
+        .catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  return state;
+}
+
+/** Add storyboard frames: into empty time if there is none, otherwise split the last frame's time. */
+function appendFrames(segments: Segment[], frames: { label: string; assetId: string }[], duration: number): Segment[] {
+  if (segments.length === 0) return makeEvenSegments(frames.map((f) => f.label), duration).map((s, i) => ({ ...s, assetId: frames[i].assetId }));
+  const last = segments[segments.length - 1];
+  const parts = frames.length + 1;
+  const len = (last.end - last.start) / parts;
+  if (len < MIN_SEGMENT) {
+    const all = [...segments.map((s) => ({ label: s.label, assetId: s.assetId ?? '' })), ...frames];
+    return makeEvenSegments(all.map((f) => f.label), duration).map((s, i) => ({ ...s, ...(all[i].assetId ? { assetId: all[i].assetId } : {}) }));
+  }
+  const out = [...segments.slice(0, -1), { ...last, end: last.start + len }];
+  frames.forEach((f, k) => out.push({ id: newId(), label: f.label, assetId: f.assetId, start: last.start + len * (k + 1), end: k === frames.length - 1 ? last.end : last.start + len * (k + 2) }));
+  return out;
+}
+
 export function Editor({ project, initialVideo, initialVideoName, videoFromStorage, presets, onUserPresetsChange, onNewProject, onStorageNote, storageNote }: Props) {
   const player = useMemo(() => new Player(), []);
   useEffect(() => () => player.destroy(), [player]);
@@ -92,7 +186,9 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     segments: project.segments,
     style: project.style,
     presetId: project.presetId,
+    tpl: project.tpl,
   });
+  /** Length of the main (launch) video. */
   const [duration, setDuration] = useState(project.duration);
   const durationRef = useRef(project.duration);
   const [video, setVideo] = useState<{ blob: Blob; name: string; stored: boolean } | null>(initialVideo ? { blob: initialVideo, name: initialVideoName ?? 'video', stored: videoFromStorage } : null);
@@ -111,35 +207,44 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   const previewRef = useRef<PreviewHandle>(null);
   const docRef = useRef<Doc>(doc);
   docRef.current = doc;
+  const tpl = doc.tpl;
+  const outDur = outputDuration(tpl, duration);
 
   useEffect(() => {
     player.fps = fpsValue(doc.style.fps);
   }, [player, doc.style.fps]);
 
-  // ---------- video loading ----------
+  const mainUrl = useMemo(() => (video ? URL.createObjectURL(video.blob) : null), [video]);
+  useEffect(() => () => void (mainUrl && URL.revokeObjectURL(mainUrl)), [mainUrl]);
+
+  // ---------- main video loading ----------
   useEffect(() => {
-    if (!video) return;
-    const url = URL.createObjectURL(video.blob);
+    if (!video || !mainUrl) return;
     const ctrl = new AbortController();
     setVideoReady(false);
     setVideoError(null);
     setPeaks(null);
     setThumbs(null);
     player
-      .load(url)
-      .then(() => readDuration(player, video.blob))
+      .load(mainUrl)
+      .then(() => (Number.isFinite(player.video.duration) && player.video.duration > 0 ? player.video.duration : mediaDuration(video.blob)))
       .then((d) => {
         if (ctrl.signal.aborted) return;
-        player.duration = d;
         const old = durationRef.current;
-        const current = docRef.current;
-        if (current.segments.length === 0) {
-          const labels = presets.find((p) => p.id === current.presetId)?.labels ?? DEFAULT_LABELS;
-          reset({ ...current, segments: makeEvenSegments(labels, d) });
-        } else if (Math.abs(old - d) > 0.001) {
-          apply((x) => ({ ...x, segments: rescaleSegments(x.segments, old, d) }));
-          if (old > 0) setNotice(`New video is ${d.toFixed(1)}s long. Sections were stretched to fit, keeping their relative sizes.`);
+        const cur = docRef.current;
+        const changed = old > 0 && Math.abs(old - d) > 0.001;
+        let next = cur;
+        if (cur.tpl.id === 'breakdown' && cur.segments.length === 0) {
+          const labels = presets.find((p) => p.id === cur.presetId)?.labels ?? DEFAULT_LABELS;
+          next = { ...next, segments: makeEvenSegments(labels, d) };
+        } else if (changed) next = { ...next, segments: rescaleSegments(cur.segments, old, d) };
+        if (clipCount(cur.tpl) > 0 && cur.tpl.clips.length === 0) next = { ...next, tpl: initTemplate(cur.tpl, d) };
+        else if (changed) next = { ...next, tpl: { ...next.tpl, clips: rescaleClips(cur.tpl.clips, old, d) } };
+        if (next !== cur) {
+          if (old === 0) reset(next);
+          else apply(() => next);
         }
+        if (changed) setNotice(`New video is ${d.toFixed(1)}s long. Sections and highlights were stretched to fit.`);
         durationRef.current = d;
         setDuration(d);
         setVideoReady(true);
@@ -159,12 +264,9 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
         .then(() => onStorageNote(null))
         .catch(() => onStorageNote("This browser couldn't save the video for next time. Your edits are still saved; after a refresh you'll be asked to drop the video again."));
     }
-    return () => {
-      ctrl.abort();
-      URL.revokeObjectURL(url);
-    };
+    return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [video, player]);
+  }, [video, mainUrl, player]);
 
   const onVideoFile = useCallback(
     (f: File) => {
@@ -181,7 +283,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   // ---------- autosave ----------
   useEffect(() => {
     const t = setTimeout(() => {
-      saveProject({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, updatedAt: Date.now() });
+      saveProject({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, tpl: doc.tpl, updatedAt: Date.now() });
     }, 300);
     return () => clearTimeout(t);
   }, [doc, duration, project.id]);
@@ -198,24 +300,122 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   const logo = useAsset(doc.style.logo.assetId, 'image');
   const bgImage = useAsset(doc.style.background.type === 'image' ? doc.style.background.assetId : null, 'image');
   const bgVideo = useAsset(doc.style.background.type === 'video' ? doc.style.background.assetId : null, 'video');
-  useEffect(() => {
-    const el = (bgVideo?.el as HTMLVideoElement) ?? null;
-    player.bgVideo = el;
-    if (el) {
-      if (player.playing) el.play().catch(() => {});
-      else if (el.duration > 0) el.currentTime = player.time % el.duration;
-    }
-    return () => {
-      el?.pause();
-      if (player.bgVideo === el) player.bgVideo = null;
-    };
-  }, [bgVideo, player]);
+  const bgVideoEl = (bgVideo?.el as HTMLVideoElement | undefined) ?? null;
+  const sources = useSources(Object.keys(tpl.sources));
+  const frameIds = useMemo(() => doc.segments.map((s) => s.assetId).filter((x): x is string => !!x), [doc.segments]);
+  const images = useImages(frameIds);
 
   const assets = useMemo(
-    () => ({ peaks, logoImage: doc.style.logo.mode === 'image' ? (logo?.el ?? null) : null, bgImage: bgImage?.el ?? null }),
-    [peaks, logo, bgImage, doc.style.logo.mode],
+    () => ({ peaks, logoImage: doc.style.logo.mode === 'image' ? (logo?.el ?? null) : null, bgImage: bgImage?.el ?? null, images: images.els }),
+    [peaks, logo, bgImage, doc.style.logo.mode, images.els],
   );
-  const renderState: RenderState = useMemo(() => ({ style: doc.style, segments: doc.segments, duration, assets }), [doc.style, doc.segments, duration, assets]);
+  const renderState: RenderState = useMemo(() => ({ style: doc.style, segments: doc.segments, duration: outDur, assets, tpl }), [doc.style, doc.segments, outDur, assets, tpl]);
+
+  // ---------- playback wiring: which videos follow the clock ----------
+  useEffect(() => {
+    const urlOf = (sid: string | null) => (!sid ? null : sid === MAIN ? mainUrl : (sources[sid]?.url ?? null));
+    const slaves: SlaveDef[] = [];
+    for (const c of tpl.clips) {
+      const url = urlOf(c.sourceId);
+      if (url) slaves.push({ key: `clip:${c.id}`, url, target: (t) => clipTime(c, t) });
+    }
+    if (tpl.id === 'bts' && tpl.secondary.sourceId) {
+      const url = urlOf(tpl.secondary.sourceId);
+      const off = tpl.secondary.offset;
+      if (url) slaves.push({ key: 'secondary', url, target: (t) => Math.max(0, t + off) });
+    }
+    if (bgVideoEl) slaves.push({ key: 'bg', el: bgVideoEl, target: (t) => (bgVideoEl.duration > 0 ? t % bgVideoEl.duration : 0) });
+    const free = isHighlights(tpl.id);
+    let mainTarget: ((t: number) => number | null) | undefined;
+    let mainAudible = true;
+    if (free) {
+      const a = tpl.audio;
+      if (a.sourceId === MAIN) mainTarget = (t) => (t + a.offset < duration ? t + a.offset : null);
+      else {
+        mainAudible = false;
+        const url = urlOf(a.sourceId);
+        if (url) slaves.push({ key: 'audio', url, audible: true, target: (t) => t + a.offset });
+      }
+    }
+    player.configure({ mode: free ? 'free' : 'main', duration: outDur, slaves, mainTarget, mainAudible });
+  }, [player, tpl, outDur, duration, mainUrl, sources, bgVideoEl]);
+
+  const getFrames = useCallback(
+    (): Frames => ({
+      main: player.mainFrame(),
+      clips: tpl.clips.map((c) => player.frame(`clip:${c.id}`)),
+      secondary: player.frame('secondary'),
+      bg: player.frame('bg'),
+    }),
+    [player, tpl.clips],
+  );
+
+  // ---------- uploads ----------
+  const storeSource = async (f: File): Promise<{ id: string; info: SourceInfo } | null> => {
+    const id = newId('asset');
+    try {
+      const d = await mediaDuration(f);
+      if (!Number.isFinite(d) || d <= 0) throw new Error('no duration');
+      await putBlob(assetKey(id), f, f.name);
+      return { id, info: { name: f.name, duration: d } };
+    } catch {
+      setNotice(`Couldn't read ${f.name}. Use an MP4, MOV or WebM file that plays in your browser.`);
+      return null;
+    }
+  };
+
+  const setTpl = useCallback((fn: (t: TemplateState) => TemplateState, key?: string) => apply((d) => ({ ...d, tpl: fn(d.tpl) }), key), [apply]);
+
+  const uploadClip = async (i: number, f: File) => {
+    if (!isVideoFile(f)) return setNotice('That file is not a video. Use an MP4, MOV or WebM file.');
+    const s = await storeSource(f);
+    if (!s) return;
+    setTpl((t) => {
+      const clips = t.clips.map((c, j) => (j === i ? { ...c, sourceId: s.id, start: 0, end: t.id === 'launch2' ? Math.min(s.info.duration, t.loopLength) : s.info.duration } : c));
+      // A full compilation: make the post as long as the longest clip.
+      const allOwn = isHighlights(t.id) && clips.every((c) => c.sourceId !== MAIN);
+      const longest = Math.max(...clips.map((c) => c.end - c.start));
+      return { ...t, sources: { ...t.sources, [s.id]: s.info }, clips, duration: allOwn ? longest : t.duration };
+    });
+  };
+
+  const uploadAudio = async (f: File) => {
+    if (!isVideoFile(f) && !isAudioFile(f)) return setNotice('Choose an audio file (MP3, WAV, M4A) or a video with sound.');
+    const s = await storeSource(f);
+    if (!s) return;
+    setTpl((t) => ({ ...t, sources: { ...t.sources, [s.id]: s.info }, audio: { sourceId: s.id, offset: 0 } }));
+  };
+
+  const uploadBts = async (f: File) => {
+    if (!isVideoFile(f)) return setNotice('That file is not a video. Use an MP4, MOV or WebM file.');
+    const s = await storeSource(f);
+    if (!s) return;
+    setTpl((t) => ({ ...t, sources: { ...t.sources, [s.id]: s.info }, secondary: { sourceId: s.id, offset: 0 } }));
+  };
+
+  const storeImage = async (f: File) => {
+    if (!f.type.startsWith('image/')) return null;
+    const id = newId('asset');
+    await putBlob(assetKey(id), f, f.name);
+    return id;
+  };
+
+  const addFrames = async (files: File[]) => {
+    if (duration <= 0) return setNotice('Add the launch video first, then the storyboard frames.');
+    const frames: { label: string; assetId: string }[] = [];
+    for (const f of files) {
+      const id = await storeImage(f).catch(() => null);
+      if (id) frames.push({ label: f.name.replace(/\.[^.]+$/, ''), assetId: id });
+    }
+    if (frames.length === 0) return setNotice('Choose PNG, JPG or WebP images.');
+    apply((d) => ({ ...d, segments: appendFrames(d.segments, frames, duration) }));
+  };
+
+  const replaceFrame = async (i: number, f: File) => {
+    const id = await storeImage(f).catch(() => null);
+    if (!id) return setNotice('Choose a PNG, JPG or WebP image.');
+    apply((d) => ({ ...d, segments: d.segments.map((s, j) => (j === i ? { ...s, assetId: id } : s)) }));
+  };
 
   const uploadAsset = async (f: File, kind: 'logo' | 'bg') => {
     const isImage = f.type.startsWith('image/');
@@ -249,6 +449,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
 
   const split = useCallback(() => {
     const segs = docRef.current.segments;
+    if (segs.length === 0) return;
     const i = Math.min(selected, segs.length - 1);
     const next = splitSegment(segs, i, player.time);
     if (next === segs) return setNotice('That section is too short to split. Sections must be at least 0.5s.');
@@ -264,6 +465,12 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     [setSegments],
   );
 
+  const keepBrand = (style: Style, from: Style): Style => ({
+    ...style,
+    fps: from.fps,
+    logo: { ...style.logo, mode: from.logo.mode, assetId: from.logo.assetId, text: from.logo.text, color: from.logo.color },
+  });
+
   const applyPreset = (p: Preset) => {
     apply((d) => {
       const style = cloneStyle(p.style);
@@ -278,19 +485,34 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     });
   };
 
+  const switchTemplate = (id: TemplateId) => {
+    player.pause();
+    apply((d) => {
+      const tplNext = duration > 0 ? initTemplate({ ...defaultTemplateState(id), sources: d.tpl.sources }, duration) : { ...defaultTemplateState(id), sources: d.tpl.sources };
+      const style = keepBrand(id === 'breakdown' ? cloneStyle(ORANGE.style) : templateStyle(id), d.style);
+      let segments = d.segments;
+      if (id === 'breakdown') segments = d.segments.length && !d.segments.some((s) => s.assetId) ? d.segments : duration > 0 ? makeEvenSegments(DEFAULT_LABELS, duration) : [];
+      if (id === 'storyboard') segments = d.segments.length && d.segments.every((s) => s.assetId) ? d.segments : [];
+      return { ...d, tpl: tplNext, style, segments, presetId: id === 'breakdown' ? ORANGE.id : d.presetId };
+    });
+    player.seek(0);
+  };
+
   // ---------- project file ----------
   const exportJson = async () => {
-    const { file, skipped } = await buildProjectFile({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, updatedAt: Date.now() });
+    const { file, skipped } = await buildProjectFile({ id: project.id, name: doc.name, duration, segments: doc.segments, style: doc.style, presetId: doc.presetId, tpl: doc.tpl, updatedAt: Date.now() });
     downloadJson(file, `${(doc.name || 'project').replace(/[^\w\- ]+/g, '').trim() || 'project'}.breakdown.json`);
-    if (skipped.length) setNotice(`Saved. The background video (${skipped.join(', ')}) is not included; send it separately.`);
+    if (skipped.length) setNotice(`Saved. These videos are not included, send them separately: ${skipped.join(', ')}.`);
   };
   const importJson = async (f: File) => {
     try {
       const p = await readProjectFile(f);
-      const segs = duration > 0 && p.duration > 0 ? rescaleSegments(p.segments, p.duration, duration) : duration > 0 && p.segments.length === 0 ? makeEvenSegments(DEFAULT_LABELS, duration) : p.segments;
-      apply((d) => ({ ...d, name: p.name, style: p.style, presetId: p.presetId, segments: segs }));
-      if (duration > 0 && p.duration > 0 && Math.abs(p.duration - duration) > 0.05) {
-        setNotice(`This project was made for a ${p.duration.toFixed(1)}s video. Sections were stretched to fit this ${duration.toFixed(1)}s video.`);
+      const scale = duration > 0 && p.duration > 0;
+      const segs = scale ? rescaleSegments(p.segments, p.duration, duration) : duration > 0 && p.segments.length === 0 && p.tpl.id === 'breakdown' ? makeEvenSegments(DEFAULT_LABELS, duration) : p.segments;
+      const tplIn = scale ? { ...p.tpl, clips: rescaleClips(p.tpl.clips, p.duration, duration) } : p.tpl;
+      apply((d) => ({ ...d, name: p.name, style: p.style, presetId: p.presetId, segments: segs, tpl: tplIn }));
+      if (scale && Math.abs(p.duration - duration) > 0.05) {
+        setNotice(`This project was made for a ${p.duration.toFixed(1)}s video. Everything was stretched to fit this ${duration.toFixed(1)}s video.`);
       } else setNotice('Project file loaded.');
     } catch (err) {
       setNotice((err as Error).message);
@@ -298,6 +520,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   };
 
   // ---------- keyboard ----------
+  const segmentsOn = usesSegments(tpl.id);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (exportOpen || presetsOpen) return;
@@ -339,14 +562,17 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
           break;
         case 's':
         case 'S':
+          if (!segmentsOn) return;
           e.preventDefault();
           split();
           break;
         case '[':
+          if (!segmentsOn) return;
           e.preventDefault();
           if (i >= 0) setSegments(setSegmentStart(segs, i, player.time).segments);
           break;
         case ']':
+          if (!segmentsOn) return;
           e.preventDefault();
           if (i >= 0) setSegments(setSegmentEnd(segs, i, player.time).segments);
           break;
@@ -354,13 +580,13 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [exportOpen, presetsOpen, selected, player, split, setSegments, undo, redo]);
+  }, [exportOpen, presetsOpen, selected, player, split, setSegments, undo, redo, segmentsOn]);
 
   // Keep the selected section following the playhead while playing.
   useEffect(
     () =>
       player.subscribe(() => {
-        if (!player.playing) return;
+        if (!player.playing || !usesSegments(docRef.current.tpl.id)) return;
         const i = activeIndex(docRef.current.segments, player.time);
         setSelected((s) => (s === i ? s : i));
       }),
@@ -375,6 +601,17 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
 
   const locked = exporting;
   const presetValue = presets.some((p) => p.id === doc.presetId) ? doc.presetId! : '';
+  const exportSources = useMemo(() => {
+    const m: Record<string, Blob> = {};
+    if (video) m[MAIN] = video.blob;
+    for (const [id, v] of Object.entries(sources)) m[id] = v.blob;
+    return m;
+  }, [video, sources]);
+  const missingSources = [
+    ...tpl.clips.map((c) => c.sourceId),
+    ...(tpl.id === 'bts' && tpl.secondary.sourceId ? [tpl.secondary.sourceId] : []),
+    ...(isHighlights(tpl.id) && tpl.audio.sourceId ? [tpl.audio.sourceId] : []),
+  ].filter((id, i, a) => id !== MAIN && a.indexOf(id) === i && !sources[id]);
 
   return (
     <div className={`editor ${locked ? 'is-locked' : ''}`}>
@@ -390,28 +627,42 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
           onChange={(e) => apply((d) => ({ ...d, name: e.target.value }), 'name')}
         />
         <div className="topbar-group">
-          <label className="visually-hidden" htmlFor="preset-select">
-            Preset
+          <label className="visually-hidden" htmlFor="template-select">
+            Template
           </label>
-          <select
-            id="preset-select"
-            value={presetValue}
-            disabled={locked}
-            onChange={(e) => {
-              const p = presets.find((x) => x.id === e.target.value);
-              if (p) applyPreset(p);
-            }}
-          >
-            {!presetValue && <option value="">Custom look</option>}
-            {presets.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
+          <select id="template-select" value={tpl.id} disabled={locked} onChange={(e) => switchTemplate(e.target.value as TemplateId)} title="Template">
+            {TEMPLATES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
               </option>
             ))}
           </select>
-          <button type="button" className="btn ghost" onClick={() => setPresetsOpen(true)} disabled={locked}>
-            Presets…
-          </button>
+          {tpl.id === 'breakdown' && (
+            <>
+              <label className="visually-hidden" htmlFor="preset-select">
+                Look
+              </label>
+              <select
+                id="preset-select"
+                value={presetValue}
+                disabled={locked}
+                onChange={(e) => {
+                  const p = presets.find((x) => x.id === e.target.value);
+                  if (p) applyPreset(p);
+                }}
+              >
+                {!presetValue && <option value="">Custom look</option>}
+                {presets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="btn ghost" onClick={() => setPresetsOpen(true)} disabled={locked}>
+                Presets…
+              </button>
+            </>
+          )}
         </div>
         <div className="topbar-group">
           <button type="button" className="btn icon-btn" onClick={undo} disabled={!canUndo || locked} aria-label="Undo" title="Undo (Ctrl+Z)">
@@ -423,7 +674,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
         </div>
         <div className="topbar-group grow-left">
           <FileButton label="Replace video" accept={VIDEO_ACCEPT} onFile={onVideoFile} className="btn ghost" />
-          <button type="button" className="btn ghost" onClick={exportJson} disabled={locked} title="Download segments and style as a file you can share">
+          <button type="button" className="btn ghost" onClick={exportJson} disabled={locked} title="Download the project settings as a file you can share">
             Save project file
           </button>
           <FileButton label="Open project file" accept="application/json,.json" onFile={importJson} className="btn ghost" />
@@ -436,10 +687,15 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
         </div>
       </header>
 
-      {(notice || storageNote || videoError) && (
+      {(notice || storageNote || videoError || missingSources.length > 0) && (
         <div className="notices" aria-live="polite">
           {videoError && <p className="banner error">{videoError}</p>}
           {storageNote && <p className="banner">{storageNote}</p>}
+          {missingSources.length > 0 && (
+            <p className="banner">
+              Some clips for this project aren't in this browser ({missingSources.map((id) => tpl.sources[id]?.name ?? id).join(', ')}). Upload them again on their highlight.
+            </p>
+          )}
           {notice && <p className="banner">{notice}</p>}
         </div>
       )}
@@ -455,37 +711,53 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             locked={locked}
             hasVideo={videoReady}
             onVideoFile={onVideoFile}
+            getFrames={getFrames}
+            projectName={doc.name}
           />
-          <Timeline
-            player={player}
-            segments={doc.segments}
-            duration={duration}
-            selected={selected}
-            onSelect={setSelected}
-            onMoveBoundary={(i, t, key) => setSegments(moveBoundary(docRef.current.segments, i, t), key)}
-            snapping={snapping}
-            onSnappingChange={setSnapping}
-            thumbnails={thumbs}
-            analyzing={analyzing}
-            locked={locked || duration <= 0}
-          />
-          <SegmentList
-            player={player}
-            segments={doc.segments}
-            selected={selected}
-            onSelect={setSelected}
-            onChange={setSegments}
-            onSplit={split}
-            onDelete={remove}
-            locked={locked || duration <= 0}
-          />
+          {(isHighlights(tpl.id) || tpl.id === 'launch2') && (
+            <HighlightsPanel tpl={tpl} mainDuration={duration} thumbnails={thumbs} onChange={setTpl} onUploadClip={uploadClip} onUploadAudio={uploadAudio} locked={locked || duration <= 0} />
+          )}
+          {tpl.id === 'bts' && <BtsPanel tpl={tpl} onChange={setTpl} onUploadBts={uploadBts} locked={locked} />}
+          {tpl.id === 'storyboard' && <StoryboardHead tpl={tpl} onChange={setTpl} onAddFrames={addFrames} locked={locked || duration <= 0} count={doc.segments.length} />}
+          {segmentsOn && (doc.segments.length > 0 || tpl.id === 'breakdown') && (
+            <>
+              <Timeline
+                player={player}
+                segments={doc.segments}
+                duration={duration}
+                selected={selected}
+                onSelect={setSelected}
+                onMoveBoundary={(i, t, key) => setSegments(moveBoundary(docRef.current.segments, i, t), key)}
+                snapping={snapping}
+                onSnappingChange={setSnapping}
+                thumbnails={thumbs}
+                analyzing={analyzing}
+                locked={locked || duration <= 0}
+              />
+              <SegmentList
+                player={player}
+                segments={doc.segments}
+                selected={selected}
+                onSelect={setSelected}
+                onChange={setSegments}
+                onSplit={split}
+                onDelete={remove}
+                locked={locked || duration <= 0}
+                title={tpl.id === 'storyboard' ? 'Frames' : 'Sections'}
+                addLabel={tpl.id === 'storyboard' ? '+ Split frame' : '+ Add section'}
+                frames={tpl.id === 'storyboard' ? { urls: images.urls, onPick: replaceFrame } : undefined}
+              />
+            </>
+          )}
           <p className="shortcuts hint">
-            Shortcuts: Space play/pause · ←/→ one frame · Shift+←/→ one second · S split · [ set start · ] set end · Ctrl+Z undo · Ctrl+Shift+Z redo
+            Shortcuts: Space play/pause · ←/→ one frame · Shift+←/→ one second
+            {segmentsOn ? ' · S split · [ set start · ] set end' : ''} · Ctrl+Z undo · Ctrl+Shift+Z redo
           </p>
         </div>
         <aside className="side" inert={locked ? true : undefined}>
           <StylePanel
             style={doc.style}
+            template={tpl.id}
             setStyle={setStyle}
             onBackgroundFile={(f) => uploadAsset(f, 'bg')}
             onLogoFile={(f) => uploadAsset(f, 'logo')}
@@ -499,9 +771,9 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
         <ExportDialog
           state={renderState}
           projectName={doc.name}
-          videoFile={video?.blob ?? null}
+          sources={exportSources}
           bgVideoFile={doc.style.background.type === 'video' ? (bgVideo?.blob ?? null) : null}
-          bgVideoEl={(bgVideo?.el as HTMLVideoElement) ?? null}
+          bgVideoEl={bgVideoEl}
           fps={doc.style.fps}
           onFpsChange={(fps) => setStyle('fps', fps)}
           onClose={() => setExportOpen(false)}

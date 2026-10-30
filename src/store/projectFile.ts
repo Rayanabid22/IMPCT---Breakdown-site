@@ -15,7 +15,12 @@ const MAX_EMBED = 8 * 1024 * 1024;
 export async function buildProjectFile(project: Project): Promise<{ file: ProjectFile; skipped: string[] }> {
   const assets: ProjectFile['assets'] = {};
   const skipped: string[] = [];
-  const ids = [project.style.logo.assetId, project.style.background.assetId].filter((x): x is string => !!x);
+  const ids = [
+    project.style.logo.assetId,
+    project.style.background.assetId,
+    ...project.segments.map((s) => s.assetId),
+    ...Object.keys(project.tpl.sources),
+  ].filter((x, i, a): x is string => !!x && a.indexOf(x) === i);
   for (const id of ids) {
     const stored = await getBlob(assetKey(id)).catch(() => null);
     if (!stored) continue;

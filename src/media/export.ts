@@ -15,8 +15,11 @@ import {
   canEncodeVideo,
   type InputAudioTrack,
   type InputVideoTrack,
+  type WrappedCanvas,
 } from 'mediabunny';
-import { renderFrame, StaticLayerCache, type RenderState } from '../render/renderFrame';
+import { renderFrame, StaticLayerCache, type Frames, type RenderState } from '../render/renderFrame';
+import { clipTime, computeTemplateLayout, isHighlights } from '../lib/templates';
+import { MAIN } from '../types';
 import { fpsValue, frameCount } from '../lib/time';
 import type { FrameSource } from '../types';
 
@@ -32,7 +35,8 @@ export interface ExportProgress {
 
 export interface ExportJob {
   state: RenderState;
-  videoFile: Blob;
+  /** Source files by id: MAIN for the launch video, asset ids for uploaded clips and audio. */
+  sources: Record<string, Blob>;
   bgVideoFile: Blob | null;
   quality: Quality;
   scale: ExportScale;
@@ -179,9 +183,25 @@ async function elementPixels(file: Blob, t: number): Promise<Uint8ClampedArray |
   }
 }
 
+interface Decoded {
+  input: Input;
+  track: InputVideoTrack | null;
+  /** First video timestamp: the zero point for this source. */
+  t0: number;
+}
+
+/** One video that feeds the frame: decoded in order, one picture per output frame. */
+interface Stream {
+  slot: 'main' | 'secondary' | 'bg' | number;
+  iter: AsyncIterator<WrappedCanvas | null>;
+  last: FrameSource | null;
+  done: boolean;
+}
+
 /** Frame-accurate offline export with WebCodecs. Returns an MP4 blob. */
 export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
   const { state, signal } = job;
+  const { tpl } = state;
   const { w: W, h: H } = outputSize(state.style.canvas, job.scale);
   const scale = W / state.style.canvas.w;
   const fps = fpsValue(state.style.fps);
@@ -196,24 +216,51 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     );
   }
 
-  const input = new Input({ source: new BlobSource(job.videoFile), formats: ALL_FORMATS });
-  const bgInput = job.bgVideoFile ? new Input({ source: new BlobSource(job.bgVideoFile), formats: ALL_FORMATS }) : null;
+  const opened = new Map<string, Decoded>();
+  const calibrated = new WeakSet<InputVideoTrack>();
+  const nameOf = (id: string) => (id === MAIN ? 'The launch video' : `${tpl.sources[id]?.name ?? 'A clip'}`);
+  /** Opens a source once and checks it can be decoded. */
+  const open = async (id: string, needVideo: boolean): Promise<Decoded> => {
+    let d = opened.get(id);
+    if (!d) {
+      const blob = id === 'bg' ? job.bgVideoFile : job.sources[id];
+      if (!blob) throw new ExportError(`${nameOf(id)} isn't loaded.`, 'Upload it again on its highlight, then export.');
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+      const track = await input.getPrimaryVideoTrack().catch(() => null);
+      let t0 = 0;
+      if (track) t0 = await track.getFirstTimestamp();
+      else t0 = await input.getFirstTimestamp().catch(() => 0);
+      d = { input, track, t0 };
+      opened.set(id, d);
+    }
+    if (needVideo) {
+      if (!d.track) throw new ExportError(`Could not read the video in ${nameOf(id).toLowerCase()}.`, 'Make sure it is an MP4, MOV or WebM file that plays in your browser.');
+      if (!(await d.track.canDecode())) {
+        throw new ExportError(`${nameOf(id)} uses a codec your browser can't decode.`, 'Try converting it to H.264 MP4 first (for example with HandBrake), then upload it again.');
+      }
+      if (!calibrated.has(d.track)) {
+        calibrated.add(d.track);
+        await matchPreviewColors(d.track, id === 'bg' ? job.bgVideoFile! : job.sources[id]);
+      }
+    }
+    return d;
+  };
+
   let output: Output | null = null;
   try {
-    const videoTrack = await input.getPrimaryVideoTrack().catch(() => null);
-    if (!videoTrack) {
-      throw new ExportError('Could not read the video file.', 'Make sure it is an MP4, MOV or WebM file that plays in your browser.');
+    // Which videos this template shows, and where each one is at output time t.
+    const L = tpl.id === 'breakdown' ? null : computeTemplateLayout(state.style, tpl);
+    const specs: { slot: Stream['slot']; source: string; at: (t: number) => number; width?: number }[] = [];
+    if (tpl.id === 'breakdown' || tpl.id === 'launch2' || tpl.id === 'storyboard' || tpl.id === 'bts') specs.push({ slot: 'main', source: MAIN, at: (t) => t });
+    tpl.clips.forEach((c, i) => {
+      const tile = L?.tiles[i];
+      // Decode tiles at the size they are drawn, not full size: much less copying for 12 tiles.
+      specs.push({ slot: i, source: c.sourceId, at: (t) => clipTime(c, t), width: tile ? Math.ceil(Math.max(tile.w, (tile.h * 16) / 9) * scale) : undefined });
+    });
+    if (tpl.id === 'bts' && tpl.secondary.sourceId) {
+      const off = tpl.secondary.offset;
+      specs.push({ slot: 'secondary', source: tpl.secondary.sourceId, at: (t) => Math.max(0, t + off) });
     }
-    if (!(await videoTrack.canDecode())) {
-      throw new ExportError(
-        "This video's codec isn't supported by your browser.",
-        'Try converting it to H.264 MP4 first (for example with HandBrake), then upload it again.',
-      );
-    }
-    await matchPreviewColors(videoTrack, job.videoFile);
-    const audioTrack = await input.getPrimaryAudioTrack().catch(() => null);
-    // Anchor on the video track. Audio can start slightly earlier (AAC priming) and must keep that offset.
-    const t0 = await videoTrack.getFirstTimestamp();
 
     const canvas = new OffscreenCanvas(W, H);
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -228,71 +275,78 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     });
     output.addVideoTrack(videoSource, { frameRate: fps });
 
-    const audioPump = audioTrack ? await setupAudio(output, audioTrack, t0, state.duration, signal) : null;
+    // Soundtrack: the main video, or for highlight grids whatever source (and start point) was chosen.
+    const highlights = isHighlights(tpl.id);
+    const audioId = highlights ? tpl.audio.sourceId : MAIN;
+    const audioOffset = highlights ? tpl.audio.offset : 0;
+    let audioPump: (() => Promise<void>) | null = null;
+    if (audioId && (audioId === MAIN || job.sources[audioId])) {
+      const d = await open(audioId, false);
+      const audioTrack = await d.input.getPrimaryAudioTrack().catch(() => null);
+      if (audioTrack) audioPump = await setupAudio(output, audioTrack, d.t0 + audioOffset, state.duration, signal);
+    }
     await output.start();
 
-    const sink = new CanvasSink(videoTrack, { poolSize: 2 });
-    const cache = new StaticLayerCache();
-
-    let bgSink: CanvasSink | null = null;
-    let bgDuration = 0;
-    let bgT0 = 0;
-    if (bgInput && state.style.background.type === 'video') {
-      const bgTrack = await bgInput.getPrimaryVideoTrack().catch(() => null);
-      if (bgTrack && (await bgTrack.canDecode())) {
-        await matchPreviewColors(bgTrack, job.bgVideoFile!);
-        bgSink = new CanvasSink(bgTrack, { poolSize: 2, width: Math.min(W, bgTrack.displayWidth) });
-        bgDuration = (await bgTrack.computeDuration()) - (await bgTrack.getFirstTimestamp());
-        bgT0 = await bgTrack.getFirstTimestamp();
+    const streams: Stream[] = [];
+    for (const sp of specs) {
+      const d = await open(sp.source, true);
+      const track = d.track!;
+      const width = sp.width ? Math.min(track.displayWidth, sp.width) : undefined;
+      const sink = new CanvasSink(track, { poolSize: 2, ...(width && width < track.displayWidth ? { width } : {}) });
+      const t0 = d.t0;
+      const gen = (function* () {
+        for (let i = 0; i < total; i++) yield t0 + sp.at(i / fps);
+      })();
+      streams.push({ slot: sp.slot, iter: sink.canvasesAtTimestamps(gen)[Symbol.asyncIterator](), last: null, done: false });
+    }
+    if (job.bgVideoFile && state.style.background.type === 'video') {
+      const d = await open('bg', true).catch(() => null);
+      if (d?.track) {
+        const bgDuration = (await d.track.computeDuration()) - d.t0;
+        const sink = new CanvasSink(d.track, { poolSize: 2, width: Math.min(W, d.track.displayWidth) });
+        const t0 = d.t0;
+        const gen = (function* () {
+          for (let i = 0; i < total; i++) yield t0 + (bgDuration > 0 ? (i / fps) % bgDuration : 0);
+        })();
+        streams.push({ slot: 'bg', iter: sink.canvasesAtTimestamps(gen)[Symbol.asyncIterator](), last: null, done: false });
       }
     }
-    const bgIter = bgSink
-      ? bgSink.canvasesAtTimestamps(
-          (function* () {
-            for (let i = 0; i < total; i++) yield bgT0 + (bgDuration > 0 ? (i / fps) % bgDuration : 0);
-          })(),
-        )[Symbol.asyncIterator]()
-      : null;
 
-    const timestamps = (function* () {
-      for (let i = 0; i < total; i++) yield t0 + i / fps;
-    })();
-
+    const cache = new StaticLayerCache();
     const videoPump = async () => {
-      let i = 0;
-      let last: FrameSource | null = null;
       const started = performance.now();
       let lastReport = 0;
-      for await (const wrapped of sink.canvasesAtTimestamps(timestamps)) {
+      for (let i = 0; i < total; i++) {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
-        if (wrapped) last = { image: wrapped.canvas, width: wrapped.canvas.width, height: wrapped.canvas.height };
-        let bgFrame: FrameSource | null = null;
-        if (bgIter) {
-          const r = await bgIter.next();
-          if (!r.done && r.value) bgFrame = { image: r.value.canvas, width: r.value.canvas.width, height: r.value.canvas.height };
+        // Decode the next picture of every stream in parallel.
+        await Promise.all(
+          streams.map(async (s) => {
+            if (s.done) return;
+            const r = await s.iter.next();
+            if (r.done) s.done = true;
+            else if (r.value) s.last = { image: r.value.canvas, width: r.value.canvas.width, height: r.value.canvas.height };
+          }),
+        );
+        const frames: Frames = { clips: tpl.clips.map(() => null) };
+        for (const s of streams) {
+          if (s.slot === 'main') frames.main = s.last;
+          else if (s.slot === 'secondary') frames.secondary = s.last;
+          else if (s.slot === 'bg') frames.bg = s.last;
+          else frames.clips![s.slot] = s.last;
         }
         const t = i / fps;
-        renderFrame(ctx, state, t, last, cache, scale, bgFrame);
+        renderFrame(ctx, state, t, frames, cache, scale);
         await videoSource.add(t, 1 / fps);
-        i++;
         const now = performance.now();
-        if (now - lastReport > 200 || i === total) {
+        if (now - lastReport > 200 || i === total - 1) {
           lastReport = now;
           const elapsed = (now - started) / 1000;
-          const eta = i > 10 ? (elapsed / i) * (total - i) : null;
-          job.onProgress({ done: i, total, eta, phase: 'rendering' });
+          const eta = i > 10 ? (elapsed / (i + 1)) * (total - i - 1) : null;
+          job.onProgress({ done: i + 1, total, eta, phase: 'rendering' });
           job.onFrame?.(canvas);
         }
-        if (i >= total) break;
       }
-      // Pad if the source ran out of frames early (rare, but keeps duration exact).
-      while (i < total) {
-        if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
-        const t = i / fps;
-        renderFrame(ctx, state, t, last, cache, scale, null);
-        await videoSource.add(t, 1 / fps);
-        i++;
-      }
+      await Promise.all(streams.map((s) => s.iter.return?.()));
       videoSource.close();
     };
 
@@ -308,12 +362,12 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     }
     throw err;
   } finally {
-    input.dispose();
-    bgInput?.dispose();
+    for (const d of opened.values()) d.input.dispose();
   }
 }
 
 /** Adds the audio track to the output and returns a function that pumps all audio into it. */
+/** `t0` is the source time that becomes 0 in the output. */
 async function setupAudio(output: Output, track: InputAudioTrack, t0: number, duration: number, signal: AbortSignal): Promise<(() => Promise<void>) | null> {
   // Fast path: AAC source, copy packets without re-encoding (bit exact, perfectly in sync).
   if (track.codec === 'aac') {
@@ -403,7 +457,9 @@ export async function exportWithRecorder(job: ExportJob, bgVideoEl: HTMLVideoEle
   canvas.height = H;
   const ctx = canvas.getContext('2d', { alpha: false })!;
   const video = document.createElement('video');
-  video.src = URL.createObjectURL(job.videoFile);
+  const mainFile = job.sources[MAIN];
+  if (!mainFile) throw new ExportError('The launch video is not loaded.', 'Drop it on the preview, then export.');
+  video.src = URL.createObjectURL(mainFile);
   video.playsInline = true;
   video.preload = 'auto';
   await new Promise<void>((resolve, reject) => {
@@ -428,7 +484,7 @@ export async function exportWithRecorder(job: ExportJob, bgVideoEl: HTMLVideoEle
   const draw = () => {
     const t = Math.min(video.currentTime, state.duration);
     const bg = bgVideoEl && bgVideoEl.readyState >= 2 ? { image: bgVideoEl, width: bgVideoEl.videoWidth, height: bgVideoEl.videoHeight } : null;
-    renderFrame(ctx, state, t, { image: video, width: video.videoWidth, height: video.videoHeight }, cache, scale, bg);
+    renderFrame(ctx, state, t, { main: { image: video, width: video.videoWidth, height: video.videoHeight }, bg }, cache, scale);
     job.onProgress({ done: Math.min(total, Math.round(t * fps)), total, eta: Math.max(0, state.duration - t), phase: 'rendering' });
     job.onFrame?.(canvas);
   };

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Project } from './types';
+import type { Project, TemplateId } from './types';
+import { defaultTemplateState, TEMPLATES, templateStyle } from './lib/templates';
 import { BUILT_IN_PRESETS, cloneStyle, ORANGE, type Preset } from './lib/presets';
 import { newId } from './lib/segments';
 import {
@@ -42,6 +43,10 @@ export default function App() {
   const [userPresets, setUserPresets] = useState<Preset[]>(() => loadUserPresets());
   const presets = useMemo(() => [...BUILT_IN_PRESETS, ...userPresets], [userPresets]);
   const [presetId, setPresetId] = useState<string | null>(null);
+  const [template, setTemplate] = useState<TemplateId>(() => {
+    const saved = localStorage.getItem('bs:template');
+    return TEMPLATES.some((t) => t.id === saved) ? (saved as TemplateId) : 'breakdown';
+  });
   const [session, setSession] = useState<Session | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [recent, setRecent] = useState<RecentEntry[]>(() => recentProjects());
@@ -80,14 +85,15 @@ export default function App() {
       setError('That file is not a video. Use an MP4, MOV or WebM file.');
       return;
     }
-    const preset = presets.find((p) => p.id === presetId);
+    const preset = template === 'breakdown' ? presets.find((p) => p.id === presetId) : undefined;
     const project: Project = {
       id: newId('proj'),
       name: f.name.replace(/\.[^.]+$/, '') || 'Untitled',
       duration: 0,
       segments: [],
-      style: cloneStyle((preset ?? ORANGE).style),
+      style: template === 'breakdown' ? cloneStyle((preset ?? ORANGE).style) : templateStyle(template),
       presetId: preset?.id ?? null,
+      tpl: defaultTemplateState(template),
       updatedAt: Date.now(),
     };
     setError(null);
@@ -113,6 +119,15 @@ export default function App() {
         presets={presets}
         presetId={presetId}
         onPresetChange={setPresetId}
+        template={template}
+        onTemplateChange={(id) => {
+          setTemplate(id);
+          try {
+            localStorage.setItem('bs:template', id);
+          } catch {
+            /* ignore */
+          }
+        }}
         onVideo={startWithVideo}
         recent={recent}
         onOpenRecent={openProject}
