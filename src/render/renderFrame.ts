@@ -3,7 +3,7 @@ import { drawTexts } from './text';
 import { computeLayout, type Layout } from '../lib/layout';
 import { activeIndex, computeBoxes, playheadX, type BoxRect } from '../lib/segments';
 import { playheadTime } from '../lib/time';
-import { computeTemplateLayout, storyboardPosition, type Rect, type TemplateLayout } from '../lib/templates';
+import { computeTemplateLayout, showreelAt, storyboardPosition, type Rect, type TemplateLayout } from '../lib/templates';
 
 export interface RenderState {
   style: Style;
@@ -517,7 +517,13 @@ function renderTemplate(ctx: Ctx, state: RenderState, time: number, frames: Fram
     drawCard(ctx, style, L.secondary, frames.secondary ?? null, u);
     if (!frames.secondary) placeholder(ctx, style, L.secondary, tpl.secondary.sourceId ? '' : 'Upload the BTS video', u);
   }
-  if (L.main) drawCard(ctx, style, L.main, frames.main ?? null, u);
+  if (L.main && tpl.id === 'showreel') {
+    // The clip on screen right now; hard cuts between clips.
+    const at = showreelAt(tpl.clips, time);
+    const f = at ? (frames.clips?.[at.index] ?? null) : null;
+    drawCard(ctx, style, L.main, f, u);
+    if (!at) placeholder(ctx, style, L.main, 'Add clips to the showreel', u);
+  } else if (L.main) drawCard(ctx, style, L.main, frames.main ?? null, u);
 
   if (L.strip) {
     const st = L.strip;

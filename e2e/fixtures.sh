@@ -35,3 +35,8 @@ q -f lavfi -i "testsrc2=size=1920x1080:rate=30000/1001:duration=30" -vf "drawgri
 q -f lavfi -i "sine=f=330:d=20" -c:a aac -b:a 128k music.m4a
 # Any TTF works as the "brand font" for the text tests.
 cp "$(fc-list : file | grep -m1 -i '\.ttf' | cut -d: -f1)" brand.ttf
+# Showreel: 12 short clips, each a different solid color with a moving marker.
+i=1; for c in 0xFF0000 0x00FF00 0x0000FF 0xFFFF00 0xFF00FF 0x00FFFF 0xFF8000 0x8000FF 0x00FF80 0xFF0080 0x80FF00 0x0080FF; do
+  q -f lavfi -i "color=c=$c:s=1280x720:r=30:d=4" -f lavfi -i "sine=f=$((200+i*40)):d=4" -vf "drawbox=x='mod(t*300\,1180)':y=600:w=100:h=100:color=black:t=fill" -c:v libx264 -pix_fmt yuv420p -preset veryfast -c:a aac -shortest reel$(printf %02d $i).mp4; i=$((i+1)); done
+# Music with a low bed and beeps at exactly 5s and 8s (to check "start the track at").
+q -f lavfi -i "aevalsrc='if(between(t\,5\,5.1)+between(t\,8\,8.1)\,0.8*sin(2*PI*1000*t)\,0.3*sin(2*PI*220*t))':s=48000:d=20" -c:a aac -b:a 160k beeps.m4a

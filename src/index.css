@@ -1073,3 +1073,36 @@ textarea {
 .stage canvas {
   touch-action: none;
 }
+
+.music-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 50vh;
+  overflow: auto;
+}
+.music-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.music-list li.current {
+  border-color: var(--accent);
+}
+.music-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lane-tools {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}

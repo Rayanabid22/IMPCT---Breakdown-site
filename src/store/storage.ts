@@ -216,3 +216,23 @@ export function blobToDataUrl(blob: Blob): Promise<string> {
 export async function dataUrlToBlob(url: string): Promise<Blob> {
   return (await fetch(url)).blob();
 }
+
+// ---------- music library (shared by every project in this browser) ----------
+
+const MUSIC_KEY = 'bs:music';
+
+export interface MusicTrack {
+  /** Asset id; the file itself is stored like any other asset. */
+  id: string;
+  name: string;
+  duration: number;
+  addedAt: number;
+}
+
+export function musicLibrary(): MusicTrack[] {
+  return readJson<MusicTrack[]>(MUSIC_KEY, []);
+}
+
+export function saveMusicLibrary(tracks: MusicTrack[]) {
+  writeJson(MUSIC_KEY, tracks);
+}

@@ -16,6 +16,7 @@ export const TEMPLATES: TemplateInfo[] = [
   { id: 'grid16', name: '16 Highlights', blurb: 'Sixteen moments in a full 4x4 grid.' },
   { id: 'storyboard', name: 'Storyboard + Result', blurb: 'Storyboard frames slide by in sync with the final video.' },
   { id: 'bts', name: 'BTS + Result', blurb: 'Behind the scenes and the final video, playing in sync.' },
+  { id: 'showreel', name: 'Showreel', blurb: 'Quick cuts from 10 to 15 clips, one after another.' },
 ];
 
 export const templateName = (id: TemplateId) => TEMPLATES.find((t) => t.id === id)?.name ?? id;
@@ -48,8 +49,8 @@ export function defaultTemplateState(id: TemplateId = 'breakdown'): TemplateStat
     duration: 0,
     clips: [],
     ringCount: 8,
-    loopLength: 5,
-    audio: { sourceId: MAIN, offset: 0 },
+    loopLength: id === 'showreel' ? 1.5 : 5,
+    audio: { sourceId: id === 'showreel' ? null : MAIN, offset: 0, fade: true },
     secondary: { sourceId: null, offset: 0 },
     headings: id === 'storyboard' ? { top: 'Storyboard:', bottom: 'Result:' } : { top: 'BTS:', bottom: 'Result:' },
     swap: false,
@@ -78,6 +79,7 @@ export function randomClips(n: number, mainDuration: number, len: number, rand =
 export function initTemplate(tpl: TemplateState, mainDuration: number): TemplateState {
   const n = clipCount(tpl);
   if (tpl.id === 'launch2') return { ...tpl, clips: randomClips(2, mainDuration, tpl.loopLength) };
+  if (tpl.id === 'showreel') return { ...tpl, clips: [showreelClip(MAIN, mainDuration, tpl.loopLength)] };
   if (isHighlights(tpl.id)) {
     const clips = evenClips(n, mainDuration);
     return { ...tpl, clips, duration: Math.max(1, mainDuration / n) };
@@ -87,7 +89,41 @@ export function initTemplate(tpl: TemplateState, mainDuration: number): Template
 
 /** Output length of the post. */
 export function outputDuration(tpl: TemplateState, mainDuration: number): number {
+  if (tpl.id === 'showreel') return Math.max(0.5, tpl.clips.reduce((s, c) => s + Math.max(0, c.end - c.start), 0));
   return isHighlights(tpl.id) ? Math.max(0.5, tpl.duration) : mainDuration;
+}
+
+/** Templates driven by their own clock instead of the main video's (their length is chosen, not the video's). */
+export const usesFreeClock = (id: TemplateId) => isHighlights(id) || id === 'showreel';
+
+/** A showreel cut of `len` seconds from the middle of a clip, where the content usually is. */
+export function showreelClip(sourceId: string, duration: number, len: number): Clip {
+  const l = Math.min(len, duration);
+  const start = Math.max(0, duration / 2 - l / 2);
+  return { id: newId('clip'), sourceId, start, end: start + l };
+}
+
+/** Showreel: when each clip plays in the output. */
+export function showreelWindows(clips: Clip[]): { start: number; end: number }[] {
+  let t = 0;
+  return clips.map((c) => {
+    const len = Math.max(0, c.end - c.start);
+    const w = { start: t, end: t + len };
+    t += len;
+    return w;
+  });
+}
+
+/** Showreel: which clip is on screen at output time t, and where in its source. */
+export function showreelAt(clips: Clip[], t: number): { index: number; time: number } | null {
+  const w = showreelWindows(clips);
+  for (let i = 0; i < clips.length; i++) {
+    if (t < w[i].end || i === clips.length - 1) {
+      if (w[i].end <= w[i].start) continue;
+      return { index: i, time: Math.min(clips[i].end, clips[i].start + Math.max(0, t - w[i].start)) };
+    }
+  }
+  return null;
 }
 
 /** Where in its source a looping clip is at output time t. */
@@ -136,6 +172,11 @@ export function templateStyle(id: TemplateId, from: Style = ORANGE.style): Style
       s.canvas = { w: 1440, h: 1080 };
       s.card.radius = 18;
       s.layout = { ...s.layout, gap: 18, margin: 36 };
+      break;
+    case 'showreel':
+      s.canvas = { w: 1920, h: 1080 };
+      s.card = { ...s.card, radius: 0, border: false, shadow: false };
+      s.layout = { ...s.layout, gap: 0, margin: 0 };
       break;
     case 'storyboard':
     case 'bts':
@@ -292,6 +333,14 @@ export function computeTemplateLayout(style: Style, tpl: TemplateState): Templat
       // Top shows BTS by default; swap puts the result on top.
       out.secondary = tpl.swap ? bottom : top;
       out.main = tpl.swap ? top : bottom;
+      break;
+    }
+    case 'showreel': {
+      // One clip at a time. Edge to edge by default; a margin turns it into a card on the background.
+      const w = Math.min(W - 2 * m, (H - 2 * m) / AR);
+      const h = m > 0 ? w * AR : H - 2 * m;
+      const ww = m > 0 ? w : W - 2 * m;
+      out.main = { x: (W - ww) / 2, y: (H - h) / 2, w: ww, h };
       break;
     }
     case 'breakdown':

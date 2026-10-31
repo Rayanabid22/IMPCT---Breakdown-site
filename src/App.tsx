@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Project, TemplateId } from './types';
+import type { Project, TemplateId, TemplateState } from './types';
 import { defaultTemplateState, TEMPLATES, templateStyle } from './lib/templates';
 import { BUILT_IN_PRESETS, cloneStyle, ORANGE, type Preset } from './lib/presets';
 import { newId } from './lib/segments';
@@ -9,6 +9,7 @@ import {
   getBlob,
   loadProject,
   loadUserPresets,
+  musicLibrary,
   recentProjects,
   removeRecent,
   saveUserPresets,
@@ -26,6 +27,14 @@ interface Session {
   videoName: string | null;
   fromStorage: boolean;
   key: string;
+  extraClips?: File[];
+}
+
+/** A new showreel starts with the newest track from the music library, if there is one. */
+function withLatestMusic(tpl: TemplateState): TemplateState {
+  const track = musicLibrary()[0];
+  if (tpl.id !== 'showreel' || !track) return tpl;
+  return { ...tpl, sources: { ...tpl.sources, [track.id]: { name: track.name, duration: track.duration } }, audio: { sourceId: track.id, offset: 0, fade: true } };
 }
 
 function browserNote(): string | null {
@@ -80,8 +89,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startWithVideo = (f: File) => {
-    if (!isVideoFile(f)) {
+  const startWithVideo = (files: File[]) => {
+    const videos = files.filter(isVideoFile);
+    const f = videos[0];
+    if (!f) {
       setError('That file is not a video. Use an MP4, MOV or WebM file.');
       return;
     }
@@ -93,14 +104,14 @@ export default function App() {
       segments: [],
       style: template === 'breakdown' ? cloneStyle((preset ?? ORANGE).style) : templateStyle(template),
       presetId: preset?.id ?? null,
-      tpl: defaultTemplateState(template),
+      tpl: withLatestMusic(defaultTemplateState(template)),
       texts: [],
       fonts: [],
       updatedAt: Date.now(),
     };
     setError(null);
     setStorageNote(null);
-    setSession({ project, video: f, videoName: f.name, fromStorage: false, key: newId('s') });
+    setSession({ project, video: f, videoName: f.name, fromStorage: false, key: newId('s'), extraClips: template === 'showreel' ? videos.slice(1) : undefined });
   };
 
   const importJson = async (f: File) => {
@@ -164,6 +175,7 @@ export default function App() {
       }}
       storageNote={storageNote}
       onStorageNote={setStorageNote}
+      initialClips={session.extraClips}
     />
   );
 }

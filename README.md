@@ -13,10 +13,12 @@ A browser tool that turns a launch video into a finished X / LinkedIn post in ab
 | **16 Highlights** | A full 4x4 grid of sixteen highlights, edge to edge. |
 | **Storyboard + Result** | Storyboard frames slide along a filmstrip on top, in sync with the final video below. Each frame's time is set like a breakdown section. |
 | **BTS + Result** | Two equal cards: the behind-the-scenes recording and the final video playing in sync, with a sync offset, swap and editable titles. |
+| **Showreel** | Quick cuts from 10 to 15 (or more) clips, one after another. Drop them all at once; each clip gets a lane where you drag and trim the moment it shows. One cut length for all, reorder, replace or remove clips. |
 
 In every template:
 - **+ Text** adds a text layer: font (built-in Google fonts or your own TTF/OTF/WOFF), weight, size, color, opacity, alignment, letter spacing, line height, background box, shadow, and when it appears. Drag it on the preview to place it.
 - The camera button next to the play controls saves the current frame as a 4K PNG.
+- **Sound**: the video's own sound, a track from the **music library**, or none. Tracks you upload to the library are available in every project in this browser. Choose where the track starts and whether it fades out at the end.
 
 On the default 16:9 canvas, every highlight tile is exactly 16:9.
 

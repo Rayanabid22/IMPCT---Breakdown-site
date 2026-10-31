@@ -136,7 +136,7 @@ export interface Project {
   updatedAt: number;
 }
 
-export type TemplateId = 'breakdown' | 'grid4' | 'ring' | 'launch2' | 'grid16' | 'storyboard' | 'bts';
+export type TemplateId = 'breakdown' | 'grid4' | 'ring' | 'launch2' | 'grid16' | 'storyboard' | 'bts' | 'showreel';
 
 /** The project video is source 'main'; uploaded clips are assets with their own ids. */
 export const MAIN = 'main';
@@ -162,10 +162,13 @@ export interface TemplateState {
   clips: Clip[];
   /** 6 to 8 for the ring template. */
   ringCount: number;
-  /** Launch + 2 highlights: loop length of each highlight. */
+  /** Launch + 2 highlights: loop length of each highlight. Showreel: default cut length. */
   loopLength: number;
-  /** Highlight grids: which source the soundtrack comes from, and where in it to start. */
-  audio: { sourceId: string | null; offset: number };
+  /**
+   * Soundtrack: MAIN (the video's own sound), a music track or uploaded audio (asset id), or null.
+   * `offset` is where in the track to start; `fade` fades music out over the last seconds.
+   */
+  audio: { sourceId: string | null; offset: number; fade: boolean };
   /** BTS template: the behind-the-scenes recording, and its offset from the result video. */
   secondary: { sourceId: string | null; offset: number };
   headings: { top: string; bottom: string };

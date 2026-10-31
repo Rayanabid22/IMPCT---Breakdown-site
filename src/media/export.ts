@@ -1,6 +1,7 @@
 import {
   ALL_FORMATS,
   AudioSampleSink,
+  AudioSample,
   AudioSampleSource,
   BlobSource,
   BufferTarget,
@@ -18,7 +19,7 @@ import {
   type WrappedCanvas,
 } from 'mediabunny';
 import { renderFrame, StaticLayerCache, type Frames, type RenderState } from '../render/renderFrame';
-import { clipTime, computeTemplateLayout, isHighlights } from '../lib/templates';
+import { clipTime, computeTemplateLayout, showreelWindows, usesFreeClock } from '../lib/templates';
 import { MAIN } from '../types';
 import { fpsValue, frameCount } from '../lib/time';
 import type { FrameSource } from '../types';
@@ -196,6 +197,8 @@ interface Stream {
   iter: AsyncIterator<WrappedCanvas | null>;
   last: FrameSource | null;
   done: boolean;
+  /** Only decoded while this is true (a showreel clip's turn). */
+  active?: (t: number) => boolean;
 }
 
 /** Frame-accurate offline export with WebCodecs. Returns an MP4 blob. */
@@ -251,9 +254,16 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
   try {
     // Which videos this template shows, and where each one is at output time t.
     const L = tpl.id === 'breakdown' ? null : computeTemplateLayout(state.style, tpl);
-    const specs: { slot: Stream['slot']; source: string; at: (t: number) => number; width?: number }[] = [];
+    const specs: { slot: Stream['slot']; source: string; at: (t: number) => number; width?: number; active?: (t: number) => boolean }[] = [];
     if (tpl.id === 'breakdown' || tpl.id === 'launch2' || tpl.id === 'storyboard' || tpl.id === 'bts') specs.push({ slot: 'main', source: MAIN, at: (t) => t });
+    const windows = tpl.id === 'showreel' ? showreelWindows(tpl.clips) : null;
     tpl.clips.forEach((c, i) => {
+      if (windows) {
+        // Showreel: each clip plays forward from its start, only during its turn.
+        const w = windows[i];
+        if (w.end > w.start) specs.push({ slot: i, source: c.sourceId, at: (t) => c.start + (t - w.start), active: (t) => t >= w.start && t < w.end });
+        return;
+      }
       const tile = L?.tiles[i];
       // Decode tiles at the size they are drawn, not full size: much less copying for 12 tiles.
       specs.push({ slot: i, source: c.sourceId, at: (t) => clipTime(c, t), width: tile ? Math.ceil(Math.max(tile.w, (tile.h * 16) / 9) * scale) : undefined });
@@ -276,15 +286,17 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
     });
     output.addVideoTrack(videoSource, { frameRate: fps });
 
-    // Soundtrack: the main video, or for highlight grids whatever source (and start point) was chosen.
-    const highlights = isHighlights(tpl.id);
-    const audioId = highlights ? tpl.audio.sourceId : MAIN;
-    const audioOffset = highlights ? tpl.audio.offset : 0;
+    // Soundtrack: the video's own sound (always in sync, from 0, in templates that follow the main
+    // video) or a music track / uploaded audio from its chosen start point.
+    const free = usesFreeClock(tpl.id);
+    const audioId = tpl.audio.sourceId;
+    const audioOffset = audioId === MAIN && !free ? 0 : tpl.audio.offset;
+    const fadeOut = tpl.audio.fade && (audioId !== MAIN || free) ? Math.min(1.5, state.duration / 3) : 0;
     let audioPump: (() => Promise<void>) | null = null;
     if (audioId && (audioId === MAIN || job.sources[audioId])) {
       const d = await open(audioId, false);
       const audioTrack = await d.input.getPrimaryAudioTrack().catch(() => null);
-      if (audioTrack) audioPump = await setupAudio(output, audioTrack, d.t0 + audioOffset, state.duration, signal);
+      if (audioTrack) audioPump = await setupAudio(output, audioTrack, d.t0 + audioOffset, state.duration, signal, fadeOut);
     }
     await output.start();
 
@@ -295,9 +307,9 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
       const sink = new CanvasSink(track, { poolSize: 2, ...(width && width < track.displayWidth ? { width } : {}) });
       const t0 = d.t0;
       const gen = (function* () {
-        for (let i = 0; i < total; i++) yield t0 + sp.at(i / fps);
+        for (let i = 0; i < total; i++) if (!sp.active || sp.active(i / fps)) yield t0 + sp.at(i / fps);
       })();
-      streams.push({ slot: sp.slot, iter: sink.canvasesAtTimestamps(gen)[Symbol.asyncIterator](), last: null, done: false });
+      streams.push({ slot: sp.slot, iter: sink.canvasesAtTimestamps(gen)[Symbol.asyncIterator](), last: null, done: false, active: sp.active });
     }
     if (job.bgVideoFile && state.style.background.type === 'video') {
       const d = await open('bg', true).catch(() => null);
@@ -322,19 +334,28 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
         await Promise.all(
           streams.map(async (s) => {
             if (s.done) return;
+            if (s.active && !s.active(i / fps)) {
+              // A showreel clip whose turn is over: free its decoder now.
+              if (s.last) {
+                s.done = true;
+                s.last = null;
+                await s.iter.return?.();
+              }
+              return;
+            }
             const r = await s.iter.next();
             if (r.done) s.done = true;
             else if (r.value) s.last = { image: r.value.canvas, width: r.value.canvas.width, height: r.value.canvas.height };
           }),
         );
+        const t = i / fps;
         const frames: Frames = { clips: tpl.clips.map(() => null) };
         for (const s of streams) {
           if (s.slot === 'main') frames.main = s.last;
           else if (s.slot === 'secondary') frames.secondary = s.last;
           else if (s.slot === 'bg') frames.bg = s.last;
-          else frames.clips![s.slot] = s.last;
+          else if (!s.active || s.active(t)) frames.clips![s.slot] = s.last;
         }
-        const t = i / fps;
         renderFrame(ctx, state, t, frames, cache, scale);
         await videoSource.add(t, 1 / fps);
         const now = performance.now();
@@ -369,9 +390,10 @@ export async function exportWithWebCodecs(job: ExportJob): Promise<Blob> {
 
 /** Adds the audio track to the output and returns a function that pumps all audio into it. */
 /** `t0` is the source time that becomes 0 in the output. */
-async function setupAudio(output: Output, track: InputAudioTrack, t0: number, duration: number, signal: AbortSignal): Promise<(() => Promise<void>) | null> {
+async function setupAudio(output: Output, track: InputAudioTrack, t0: number, duration: number, signal: AbortSignal, fadeOut = 0): Promise<(() => Promise<void>) | null> {
   // Fast path: AAC source, copy packets without re-encoding (bit exact, perfectly in sync).
-  if (track.codec === 'aac') {
+  // A fade needs the samples, so it always takes the re-encode path.
+  if (track.codec === 'aac' && fadeOut <= 0) {
     const decoderConfig = await track.getDecoderConfig();
     if (decoderConfig) {
       const source = new EncodedAudioPacketSource('aac');
@@ -418,12 +440,35 @@ async function setupAudio(output: Output, track: InputAudioTrack, t0: number, du
         sample.close();
         continue;
       }
+      if (fadeOut > 0 && ts + sample.duration > duration - fadeOut) {
+        const faded = fadeSample(sample, ts, duration, fadeOut);
+        sample.close();
+        await source.add(faded);
+        faded.close();
+        continue;
+      }
       sample.setTimestamp(ts);
       await source.add(sample);
       sample.close();
     }
     source.close();
   };
+}
+
+/** A copy of the sample with a linear fade to silence ending at `duration` (output time). */
+function fadeSample(sample: AudioSample, ts: number, duration: number, fadeOut: number): AudioSample {
+  const frames = sample.numberOfFrames;
+  const channels = sample.numberOfChannels;
+  const data = new Float32Array(frames * channels);
+  for (let c = 0; c < channels; c++) {
+    const plane = data.subarray(c * frames, (c + 1) * frames);
+    sample.copyTo(plane, { planeIndex: c, format: 'f32-planar' });
+    for (let i = 0; i < frames; i++) {
+      const t = ts + i / sample.sampleRate;
+      plane[i] *= Math.max(0, Math.min(1, (duration - t) / fadeOut));
+    }
+  }
+  return new AudioSample({ data, format: 'f32-planar', numberOfChannels: channels, sampleRate: sample.sampleRate, timestamp: ts });
 }
 
 // ---------- real-time fallback ----------

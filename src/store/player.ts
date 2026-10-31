@@ -11,8 +11,12 @@ export interface SlaveDef {
   el?: HTMLVideoElement;
   /** Where this video should be at output time t. Null means hidden/paused. */
   target: (t: number) => number | null;
-  /** Plays sound (the soundtrack of highlight grids). Everything else is muted. */
+  /** Plays sound (the soundtrack). Everything else is muted. */
   audible?: boolean;
+  /** Where to wait while inactive (target null), so the clip starts instantly when its turn comes. */
+  rest?: number;
+  /** Volume over time (fade out), 0..1. */
+  volume?: (t: number) => number;
 }
 
 interface Slave {
@@ -134,6 +138,14 @@ export class Player {
 
   private onSlaveEvent = () => this.emit();
 
+  /** A follower should be playing but is still paused (a showreel clip whose turn just came). */
+  private needsStart(): boolean {
+    if (!this.playing) return false;
+    const t = this.time;
+    for (const s of this.slaves.values()) if (s.el.paused && s.def.target(t) !== null && s.el.readyState >= 1) return true;
+    return false;
+  }
+
   /** Some video is still seeking or loading, so the picture may not be final yet. */
   get busy(): boolean {
     const t = this.time;
@@ -168,10 +180,11 @@ export class Player {
   private sync(hard = false) {
     const t = this.time;
     const playing = this.playing;
-    const follow = (el: HTMLVideoElement, target: number | null) => {
+    const follow = (el: HTMLVideoElement, target: number | null, rest?: number) => {
       if (el.readyState < 1) return;
       if (target === null) {
         if (!el.paused) el.pause();
+        if (rest !== undefined && Math.abs(el.currentTime - rest) > 0.02 && !el.seeking) el.currentTime = rest;
         return;
       }
       const want = Math.max(0, Math.min(target, (el.duration || Infinity) - 0.01));
@@ -185,7 +198,10 @@ export class Player {
       }
     };
     if (this.mode === 'free' && this.hasVideo) follow(this.video, this.mainTarget ? this.mainTarget(t) : null);
-    for (const s of this.slaves.values()) follow(s.el, s.def.target(t));
+    for (const s of this.slaves.values()) {
+      follow(s.el, s.def.target(t), s.def.rest);
+      if (s.def.volume) s.el.volume = Math.max(0, Math.min(1, s.def.volume(t)));
+    }
   }
 
   subscribe = (l: Listener) => {
@@ -207,8 +223,9 @@ export class Player {
         this.clockTime = this.duration;
         this.freePlaying = false;
       }
-      // Correct drift a few times a second; seeking every frame would stall the videos.
-      if (n++ % 8 === 0 || !this.playing) this.sync();
+      // Correct drift a few times a second; seeking every frame would stall the videos. Clips whose
+      // turn just started (showreel) are synced right away so cuts land on time.
+      if (n++ % 8 === 0 || !this.playing || this.needsStart()) this.sync();
       this.emit();
       if (this.playing) this.raf = requestAnimationFrame(tick);
     };

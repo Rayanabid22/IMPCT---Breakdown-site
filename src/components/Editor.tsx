@@ -11,15 +11,17 @@ import { PresetManager } from './PresetManager';
 import { HighlightsPanel } from './HighlightsPanel';
 import { BtsPanel, StoryboardHead } from './TemplatePanels';
 import { TextPanel } from './TextPanel';
+import { ShowreelPanel } from './ShowreelPanel';
+import { MusicLibrary, SoundPanel } from './SoundPanel';
 import { defaultTextLayer } from '../render/text';
 import { FileButton } from './controls';
 import { VIDEO_ACCEPT } from './StartScreen';
 import { computePeaks, computeThumbnails, type Thumbnails } from '../media/analyze';
 import { activeIndex, deleteSegment, makeEvenSegments, MIN_SEGMENT, moveBoundary, newId, rescaleSegments, setSegmentEnd, setSegmentStart, splitSegment } from '../lib/segments';
 import { cloneStyle, DEFAULT_LABELS, ORANGE, type Preset } from '../lib/presets';
-import { clipCount, clipTime, defaultTemplateState, initTemplate, isHighlights, outputDuration, rescaleClips, TEMPLATES, templateStyle, usesSegments } from '../lib/templates';
+import { clipCount, clipTime, defaultTemplateState, initTemplate, isHighlights, outputDuration, rescaleClips, showreelClip, showreelWindows, TEMPLATES, templateStyle, usesFreeClock, usesSegments } from '../lib/templates';
 import { fpsValue } from '../lib/time';
-import { assetKey, getBlob, putBlob, saveProject, storeProjectVideo } from '../store/storage';
+import { assetKey, getBlob, musicLibrary, putBlob, saveMusicLibrary, saveProject, storeProjectVideo, type MusicTrack } from '../store/storage';
 import { buildProjectFile, downloadJson, readProjectFile } from '../store/projectFile';
 import type { Frames, RenderState } from '../render/renderFrame';
 import { ALL_FORMATS, BlobSource, Input } from 'mediabunny';
@@ -35,6 +37,8 @@ interface Props {
   onNewProject: () => void;
   onStorageNote: (msg: string | null) => void;
   storageNote: string | null;
+  /** Showreel: more clips dropped on the start screen together with the first one. */
+  initialClips?: File[];
 }
 
 export function isVideoFile(f: File) {
@@ -149,6 +153,28 @@ function useSources(ids: string[]) {
   return map;
 }
 
+/** Filmstrip thumbnails for uploaded clips, made one clip at a time in the background. */
+function useSourceThumbs(sources: Record<string, LoadedSource>, info: TemplateState['sources']) {
+  const [thumbs, setThumbs] = useState<Record<string, Thumbnails>>({});
+  const done = useRef(new Set<string>());
+  useEffect(() => {
+    const ctrl = new AbortController();
+    (async () => {
+      for (const [id, src] of Object.entries(sources)) {
+        if (ctrl.signal.aborted) return;
+        if (done.current.has(id) || !info[id] || src.blob.type.startsWith('audio/')) continue;
+        done.current.add(id);
+        // Short clips get 2 per second so their lane still shows enough frames to pick from.
+        const t = await computeThumbnails(src.blob, info[id].duration, undefined, ctrl.signal, 40, 2).catch(() => null);
+        if (t && !ctrl.signal.aborted) setThumbs((m) => ({ ...m, [id]: t }));
+        else if (ctrl.signal.aborted) done.current.delete(id);
+      }
+    })();
+    return () => ctrl.abort();
+  }, [sources, info]);
+  return thumbs;
+}
+
 /** Storyboard frame images by asset id. */
 function useImages(ids: string[]) {
   const [state, setState] = useState<{ els: Record<string, HTMLImageElement>; urls: Record<string, string> }>({ els: {}, urls: {} });
@@ -189,7 +215,7 @@ function appendFrames(segments: Segment[], frames: { label: string; assetId: str
   return out;
 }
 
-export function Editor({ project, initialVideo, initialVideoName, videoFromStorage, presets, onUserPresetsChange, onNewProject, onStorageNote, storageNote }: Props) {
+export function Editor({ project, initialVideo, initialVideoName, videoFromStorage, presets, onUserPresetsChange, onNewProject, onStorageNote, storageNote, initialClips }: Props) {
   const player = useMemo(() => new Player(), []);
   useEffect(() => () => player.destroy(), [player]);
 
@@ -253,7 +279,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
           const labels = presets.find((p) => p.id === cur.presetId)?.labels ?? DEFAULT_LABELS;
           next = { ...next, segments: makeEvenSegments(labels, d) };
         } else if (changed) next = { ...next, segments: rescaleSegments(cur.segments, old, d) };
-        if (clipCount(cur.tpl) > 0 && cur.tpl.clips.length === 0) next = { ...next, tpl: initTemplate(cur.tpl, d) };
+        if ((clipCount(cur.tpl) > 0 || cur.tpl.id === 'showreel') && cur.tpl.clips.length === 0) next = { ...next, tpl: initTemplate(cur.tpl, d) };
         else if (changed) next = { ...next, tpl: { ...next.tpl, clips: rescaleClips(cur.tpl.clips, old, d) } };
         if (next !== cur) {
           if (old === 0) reset(next);
@@ -317,6 +343,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   const bgVideo = useAsset(doc.style.background.type === 'video' ? doc.style.background.assetId : null, 'video');
   const bgVideoEl = (bgVideo?.el as HTMLVideoElement | undefined) ?? null;
   const sources = useSources(Object.keys(tpl.sources));
+  const sourceThumbs = useSourceThumbs(sources, tpl.sources);
   const frameIds = useMemo(() => doc.segments.map((s) => s.assetId).filter((x): x is string => !!x), [doc.segments]);
   const images = useImages(frameIds);
 
@@ -333,9 +360,20 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   useEffect(() => {
     const urlOf = (sid: string | null) => (!sid ? null : sid === MAIN ? mainUrl : (sources[sid]?.url ?? null));
     const slaves: SlaveDef[] = [];
-    for (const c of tpl.clips) {
-      const url = urlOf(c.sourceId);
-      if (url) slaves.push({ key: `clip:${c.id}`, url, target: (t) => clipTime(c, t) });
+    if (tpl.id === 'showreel') {
+      // One clip at a time; the others wait paused on their first frame so every cut is instant.
+      const windows = showreelWindows(tpl.clips);
+      tpl.clips.forEach((c, i) => {
+        const url = urlOf(c.sourceId);
+        const w = windows[i];
+        const last = i === tpl.clips.length - 1;
+        if (url) slaves.push({ key: `clip:${c.id}`, url, rest: c.start, target: (t) => (t >= w.start && (t < w.end || (last && t <= w.end)) ? c.start + (t - w.start) : null) });
+      });
+    } else {
+      for (const c of tpl.clips) {
+        const url = urlOf(c.sourceId);
+        if (url) slaves.push({ key: `clip:${c.id}`, url, target: (t) => clipTime(c, t) });
+      }
     }
     if (tpl.id === 'bts' && tpl.secondary.sourceId) {
       const url = urlOf(tpl.secondary.sourceId);
@@ -343,17 +381,24 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
       if (url) slaves.push({ key: 'secondary', url, target: (t) => Math.max(0, t + off) });
     }
     if (bgVideoEl) slaves.push({ key: 'bg', el: bgVideoEl, target: (t) => (bgVideoEl.duration > 0 ? t % bgVideoEl.duration : 0) });
-    const free = isHighlights(tpl.id);
+    const free = usesFreeClock(tpl.id);
+    const a = tpl.audio;
     let mainTarget: ((t: number) => number | null) | undefined;
-    let mainAudible = true;
-    if (free) {
-      const a = tpl.audio;
-      if (a.sourceId === MAIN) mainTarget = (t) => (t + a.offset < duration ? t + a.offset : null);
-      else {
-        mainAudible = false;
-        const url = urlOf(a.sourceId);
-        if (url) slaves.push({ key: 'audio', url, audible: true, target: (t) => t + a.offset });
-      }
+    const mainAudible = a.sourceId === MAIN;
+    if (free && a.sourceId === MAIN) mainTarget = (t) => (t + a.offset < duration ? t + a.offset : null);
+    if (a.sourceId && a.sourceId !== MAIN) {
+      // Music (or uploaded audio): plays from its start point, stops when the track ends, fades at the end.
+      const url = urlOf(a.sourceId);
+      const len = tpl.sources[a.sourceId]?.duration ?? Infinity;
+      const fade = Math.min(1.5, outDur / 3);
+      if (url)
+        slaves.push({
+          key: 'audio',
+          url,
+          audible: true,
+          target: (t) => (t + a.offset < len - 0.05 ? t + a.offset : null),
+          volume: a.fade ? (t) => (outDur - t) / fade : undefined,
+        });
     }
     player.configure({ mode: free ? 'free' : 'main', duration: outDur, slaves, mainTarget, mainAudible });
   }, [player, tpl, outDur, duration, mainUrl, sources, bgVideoEl]);
@@ -397,12 +442,76 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     });
   };
 
-  const uploadAudio = async (f: File) => {
-    if (!isVideoFile(f) && !isAudioFile(f)) return setNotice('Choose an audio file (MP3, WAV, M4A) or a video with sound.');
+  // ---------- music library ----------
+  const [library, setLibrary] = useState<MusicTrack[]>(() => musicLibrary());
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const pickTrack = (t: MusicTrack) =>
+    setTpl((x) => ({ ...x, sources: { ...x.sources, [t.id]: { name: t.name, duration: t.duration } }, audio: { sourceId: t.id, offset: 0, fade: true } }));
+  const uploadMusic = async (files: File[]) => {
+    setLibraryBusy(true);
+    const added: MusicTrack[] = [];
+    for (const f of files) {
+      if (!isAudioFile(f) && !isVideoFile(f)) {
+        setNotice(`${f.name} isn't an audio file.`);
+        continue;
+      }
+      const s = await storeSource(f);
+      if (s) added.push({ id: s.id, name: f.name.replace(/\.[^.]+$/, ''), duration: s.info.duration, addedAt: Date.now() });
+    }
+    const next = [...added.reverse(), ...musicLibrary()];
+    saveMusicLibrary(next);
+    setLibrary(next);
+    setLibraryBusy(false);
+    // First track in a post with no music yet: use it right away.
+    if (added.length && (!tpl.audio.sourceId || tpl.audio.sourceId === MAIN) && tpl.id === 'showreel') pickTrack(added[added.length - 1]);
+  };
+  const removeTrack = (id: string) => {
+    // The file stays stored, so posts already using the track keep working.
+    const next = musicLibrary().filter((t) => t.id !== id);
+    saveMusicLibrary(next);
+    setLibrary(next);
+  };
+
+  // ---------- showreel ----------
+  const [addingClips, setAddingClips] = useState(false);
+  const addClips = async (files: File[]) => {
+    const vids = files.filter(isVideoFile);
+    if (vids.length < files.length) setNotice('Some files were skipped because they are not videos.');
+    if (!vids.length) return;
+    setAddingClips(true);
+    const stored: { id: string; info: SourceInfo }[] = [];
+    for (const f of vids) {
+      const s = await storeSource(f);
+      if (s) stored.push(s);
+    }
+    setAddingClips(false);
+    if (!stored.length) return;
+    setTpl((t) => ({
+      ...t,
+      sources: { ...t.sources, ...Object.fromEntries(stored.map((s) => [s.id, s.info])) },
+      clips: [...t.clips, ...stored.map((s) => showreelClip(s.id, s.info.duration, t.loopLength))],
+    }));
+  };
+  const replaceClip = async (i: number, f: File) => {
+    if (!isVideoFile(f)) return setNotice('That file is not a video. Use an MP4, MOV or WebM file.');
     const s = await storeSource(f);
     if (!s) return;
-    setTpl((t) => ({ ...t, sources: { ...t.sources, [s.id]: s.info }, audio: { sourceId: s.id, offset: 0 } }));
+    setTpl((t) => ({
+      ...t,
+      sources: { ...t.sources, [s.id]: s.info },
+      clips: t.clips.map((c, j) => (j === i ? { ...showreelClip(s.id, s.info.duration, t.loopLength), id: c.id } : c)),
+    }));
   };
+  // Clips dropped on the start screen with the first one are added once the first one has loaded.
+  const pendingClips = useRef(initialClips ?? []);
+  useEffect(() => {
+    if (!videoReady || tpl.id !== 'showreel' || pendingClips.current.length === 0 || tpl.clips.length === 0) return;
+    const files = pendingClips.current;
+    pendingClips.current = [];
+    addClips(files);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoReady, tpl.id, tpl.clips.length]);
 
   const uploadBts = async (f: File) => {
     if (!isVideoFile(f)) return setNotice('That file is not a video. Use an MP4, MOV or WebM file.');
@@ -611,7 +720,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   const segmentsOn = usesSegments(tpl.id);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (exportOpen || presetsOpen) return;
+      if (exportOpen || presetsOpen || libraryOpen) return;
       const target = e.target as HTMLElement;
       const typing = target.closest('input, textarea, select, [contenteditable="true"]') && !(target as HTMLInputElement).type?.match(/range|checkbox|radio|button/);
       const mod = e.metaKey || e.ctrlKey;
@@ -669,7 +778,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [exportOpen, presetsOpen, selected, player, split, setSegments, undo, redo, segmentsOn]);
+  }, [exportOpen, presetsOpen, libraryOpen, selected, player, split, setSegments, undo, redo, segmentsOn]);
 
   // Keep the selected section following the playhead while playing.
   useEffect(
@@ -699,7 +808,7 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
   const missingSources = [
     ...tpl.clips.map((c) => c.sourceId),
     ...(tpl.id === 'bts' && tpl.secondary.sourceId ? [tpl.secondary.sourceId] : []),
-    ...(isHighlights(tpl.id) && tpl.audio.sourceId ? [tpl.audio.sourceId] : []),
+    ...(tpl.audio.sourceId ? [tpl.audio.sourceId] : []),
   ].filter((id, i, a) => id !== MAIN && a.indexOf(id) === i && !sources[id]);
 
   return (
@@ -812,7 +921,21 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             onMoveText={(id, x, y, key) => changeText(id, { x, y }, key)}
           />
           {(isHighlights(tpl.id) || tpl.id === 'launch2') && (
-            <HighlightsPanel tpl={tpl} mainDuration={duration} thumbnails={thumbs} onChange={setTpl} onUploadClip={uploadClip} onUploadAudio={uploadAudio} locked={locked || duration <= 0} />
+            <HighlightsPanel tpl={tpl} mainDuration={duration} thumbnails={thumbs} sourceThumbs={sourceThumbs} onChange={setTpl} onUploadClip={uploadClip} locked={locked || duration <= 0} />
+          )}
+          {tpl.id === 'showreel' && (
+            <ShowreelPanel
+              tpl={tpl}
+              mainDuration={duration}
+              mainName={video?.name ?? 'Clip 1'}
+              thumbnails={thumbs}
+              sourceThumbs={sourceThumbs}
+              onChange={setTpl}
+              onAddClips={addClips}
+              onReplaceClip={replaceClip}
+              adding={addingClips}
+              locked={locked || duration <= 0}
+            />
           )}
           {tpl.id === 'bts' && <BtsPanel tpl={tpl} onChange={setTpl} onUploadBts={uploadBts} locked={locked} />}
           {tpl.id === 'storyboard' && <StoryboardHead tpl={tpl} onChange={setTpl} onAddFrames={addFrames} locked={locked || duration <= 0} count={doc.segments.length} />}
@@ -865,6 +988,14 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             player={player}
             duration={outDur}
           />
+          <SoundPanel
+            tpl={tpl}
+            library={library}
+            mainDuration={duration}
+            onChange={(patch, key) => setTpl((t) => ({ ...t, audio: { ...t.audio, ...patch } }), key)}
+            onPickTrack={pickTrack}
+            onOpenLibrary={() => setLibraryOpen(true)}
+          />
           <StylePanel
             style={doc.style}
             template={tpl.id}
@@ -892,6 +1023,20 @@ export function Editor({ project, initialVideo, initialVideoName, videoFromStora
             if (b) player.pause();
           }}
           onFrame={(c) => previewRef.current?.showExternalFrame(c)}
+        />
+      )}
+      {libraryOpen && (
+        <MusicLibrary
+          library={library}
+          currentId={tpl.audio.sourceId}
+          onUpload={uploadMusic}
+          onUse={(t) => {
+            pickTrack(t);
+            setLibraryOpen(false);
+          }}
+          onRemove={removeTrack}
+          onClose={() => setLibraryOpen(false)}
+          busy={libraryBusy}
         />
       )}
       {presetsOpen && (

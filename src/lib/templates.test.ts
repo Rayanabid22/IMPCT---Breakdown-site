@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clipTime, computeTemplateLayout, defaultTemplateState, evenClips, initTemplate, outputDuration, randomClips, rescaleClips, storyboardPosition, templateStyle, type Rect } from './templates';
+import { clipTime, computeTemplateLayout, defaultTemplateState, evenClips, initTemplate, outputDuration, randomClips, rescaleClips, showreelAt, showreelClip, showreelWindows, storyboardPosition, templateStyle, type Rect } from './templates';
 import type { TemplateId } from '../types';
 
 const inside = (r: Rect, W: number, H: number) => r.x >= -0.01 && r.y >= -0.01 && r.x + r.w <= W + 0.01 && r.y + r.h <= H + 0.01;
@@ -165,5 +165,45 @@ describe('storyboard position', () => {
     expect(mid).toBeLessThan(0.6);
     expect(storyboardPosition(starts, 4)).toBe(1);
     expect(storyboardPosition(starts, 100)).toBe(2);
+  });
+});
+
+describe('showreel', () => {
+  const clips = [
+    { id: 'a', sourceId: 'main', start: 2, end: 3.5 },
+    { id: 'b', sourceId: 'x', start: 10, end: 11 },
+    { id: 'c', sourceId: 'y', start: 0, end: 2 },
+  ];
+  const tpl = { ...defaultTemplateState('showreel'), clips };
+
+  it('plays clips back to back; length is the sum of the cuts', () => {
+    expect(outputDuration(tpl, 60)).toBe(4.5);
+    expect(showreelWindows(clips)).toEqual([
+      { start: 0, end: 1.5 },
+      { start: 1.5, end: 2.5 },
+      { start: 2.5, end: 4.5 },
+    ]);
+  });
+
+  it('knows which clip is on screen and where in it', () => {
+    expect(showreelAt(clips, 0)).toEqual({ index: 0, time: 2 });
+    expect(showreelAt(clips, 1.49)!.index).toBe(0);
+    expect(showreelAt(clips, 1.5)).toEqual({ index: 1, time: 10 });
+    expect(showreelAt(clips, 3)).toEqual({ index: 2, time: 0.5 });
+    expect(showreelAt(clips, 4.5)).toEqual({ index: 2, time: 2 });
+    expect(showreelAt([], 1)).toBeNull();
+  });
+
+  it('new cuts come from the middle of each clip', () => {
+    const c = showreelClip('x', 10, 1.5);
+    expect(c.start).toBeCloseTo(4.25);
+    expect(c.end - c.start).toBeCloseTo(1.5);
+    const short = showreelClip('x', 1, 1.5);
+    expect([short.start, short.end]).toEqual([0, 1]);
+  });
+
+  it('starts silent with a free clock', () => {
+    expect(defaultTemplateState('showreel').audio.sourceId).toBeNull();
+    expect(defaultTemplateState('grid4').audio.sourceId).toBe('main');
   });
 });

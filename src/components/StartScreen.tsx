@@ -13,7 +13,8 @@ interface Props {
   onPresetChange: (id: string | null) => void;
   template: TemplateId;
   onTemplateChange: (id: TemplateId) => void;
-  onVideo: (f: File) => void;
+  /** The first file is the main video; showreels can bring more clips at once. */
+  onVideo: (files: File[]) => void;
   recent: RecentEntry[];
   onOpenRecent: (id: string) => void;
   onRemoveRecent: (id: string) => void;
@@ -50,23 +51,25 @@ export function StartScreen({ presets, presetId, onPresetChange, template, onTem
         onDrop={(e) => {
           e.preventDefault();
           setOver(false);
-          const f = e.dataTransfer.files?.[0];
-          if (f) onVideo(f);
+          const files = [...(e.dataTransfer.files ?? [])];
+          if (files.length) onVideo(template === 'showreel' ? files : files.slice(0, 1));
         }}
       >
         <input
           type="file"
           accept={VIDEO_ACCEPT}
           className="visually-hidden"
+          multiple={template === 'showreel'}
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onVideo(f);
+            const files = [...(e.target.files ?? [])];
+            if (files.length) onVideo(files);
             e.target.value = '';
           }}
         />
-        <span className="drop-title">Drop your launch video here</span>
+        <span className="drop-title">{template === 'showreel' ? 'Drop your clips here' : 'Drop your launch video here'}</span>
         <span className="drop-sub">
-          Making a <strong>{TEMPLATES.find((t) => t.id === template)?.name}</strong> post. Or click to choose a file. MP4, MOV or WebM. It stays on this computer.
+          Making a <strong>{TEMPLATES.find((t) => t.id === template)?.name}</strong> post.{' '}
+          {template === 'showreel' ? 'Select 10 to 15 clips at once (you can add more later).' : 'Or click to choose a file.'} MP4, MOV or WebM. It stays on this computer.
         </span>
       </label>
       {error && (

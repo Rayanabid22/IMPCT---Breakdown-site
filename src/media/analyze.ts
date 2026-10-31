@@ -100,6 +100,8 @@ export async function computeThumbnails(
   duration: number,
   onProgress?: (t: Thumbnails) => void,
   signal?: AbortSignal,
+  maxCount = 120,
+  perSecond = 1,
 ): Promise<Thumbnails | null> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
@@ -108,7 +110,7 @@ export async function computeThumbnails(
     const first = await track.getFirstTimestamp();
     const height = 54;
     const width = Math.round((height * track.displayWidth) / track.displayHeight) || 96;
-    const count = Math.max(2, Math.min(120, Math.round(duration)));
+    const count = Math.max(2, Math.min(maxCount, Math.round(duration * perSecond)));
     const times = Array.from({ length: count }, (_, i) => ((i + 0.5) / count) * duration);
     const sink = new CanvasSink(track, { width, height, fit: 'cover', poolSize: 0 });
     const result: Thumbnails = { images: [], times: [], width, height };

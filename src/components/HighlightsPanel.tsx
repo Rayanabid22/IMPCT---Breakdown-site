@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { MAIN, type Clip, type TemplateState } from '../types';
 import type { Thumbnails } from '../media/analyze';
 import { clipCount, evenClips, isHighlights, randomClips } from '../lib/templates';
@@ -12,9 +12,10 @@ interface Props {
   tpl: TemplateState;
   mainDuration: number;
   thumbnails: Thumbnails | null;
+  /** Thumbnails of uploaded clips, by source id. */
+  sourceThumbs: Record<string, Thumbnails>;
   onChange: (fn: (t: TemplateState) => TemplateState, key?: string) => void;
   onUploadClip: (index: number, f: File) => void;
-  onUploadAudio: (f: File) => void;
   locked: boolean;
 }
 
@@ -33,10 +34,9 @@ export function setRingCount(tpl: TemplateState, n: number, mainDuration: number
   return { ...tpl, ringCount: count, clips };
 }
 
-export function HighlightsPanel({ tpl, mainDuration, thumbnails, onChange, onUploadClip, onUploadAudio, locked }: Props) {
+export function HighlightsPanel({ tpl, mainDuration, thumbnails, sourceThumbs, onChange, onUploadClip, locked }: Props) {
   const highlights = isHighlights(tpl.id);
   const n = clipCount(tpl);
-  const ownSources = Object.entries(tpl.sources);
   const setClip = (i: number, patch: Partial<Clip>, key?: string) =>
     onChange((t) => ({ ...t, clips: t.clips.map((c, j) => (j === i ? { ...c, ...patch } : c)) }), key);
 
@@ -101,38 +101,6 @@ export function HighlightsPanel({ tpl, mainDuration, thumbnails, onChange, onUpl
             <p className="hint">6: three on top, three below. 7: four and three. 8: four and four. The logo sits in the middle.</p>
           </div>
         )}
-        {highlights && (
-          <div className="field">
-            <label htmlFor="audio-src">Sound</label>
-            <div className="row-gap">
-              <select
-                id="audio-src"
-                value={tpl.audio.sourceId ?? ''}
-                disabled={locked}
-                onChange={(e) => onChange((t) => ({ ...t, audio: { ...t.audio, sourceId: e.target.value || null } }))}
-              >
-                <option value="">No sound</option>
-                <option value={MAIN}>Launch video</option>
-                {ownSources.map(([id, s]) => (
-                  <option key={id} value={id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              <FileButton label="Upload audio" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac" onFile={onUploadAudio} className="btn small" />
-            </div>
-            {tpl.audio.sourceId && (
-              <SecondsField
-                label="Start sound at"
-                value={tpl.audio.offset}
-                min={0}
-                max={Math.max(0, sourceDuration(tpl, tpl.audio.sourceId, mainDuration) - 0.5)}
-                disabled={locked}
-                onCommit={(v) => onChange((t) => ({ ...t, audio: { ...t.audio, offset: v } }), 'audio-offset')}
-              />
-            )}
-          </div>
-        )}
       </div>
 
       <div className="lanes">
@@ -143,7 +111,7 @@ export function HighlightsPanel({ tpl, mainDuration, thumbnails, onChange, onUpl
             clip={c}
             sourceName={c.sourceId === MAIN ? 'Launch video' : (tpl.sources[c.sourceId]?.name ?? 'Missing clip')}
             sourceDuration={sourceDuration(tpl, c.sourceId, mainDuration)}
-            thumbnails={c.sourceId === MAIN ? thumbnails : null}
+            thumbnails={c.sourceId === MAIN ? thumbnails : (sourceThumbs[c.sourceId] ?? null)}
             locked={locked}
             onChange={(patch, key) => setClip(i, patch, key)}
             onUpload={(f) => onUploadClip(i, f)}
@@ -162,7 +130,7 @@ export function HighlightsPanel({ tpl, mainDuration, thumbnails, onChange, onUpl
   );
 }
 
-function SecondsField({ label, hint, value, min, max, disabled, onCommit }: { label: string; hint?: string; value: number; min: number; max: number; disabled: boolean; onCommit: (v: number) => void }) {
+export function SecondsField({ label, hint, value, min, max, disabled, onCommit }: { label: string; hint?: string; value: number; min: number; max: number; disabled: boolean; onCommit: (v: number) => void }) {
   const [text, setText] = useState(formatTime(value));
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => setText(formatTime(value)), [value]);
@@ -198,10 +166,13 @@ interface LaneProps {
   locked: boolean;
   onChange: (patch: Partial<Clip>, key?: string) => void;
   onUpload: (f: File) => void;
-  onUseMain: () => void;
+  onUseMain?: () => void;
+  uploadLabel?: string;
+  /** Extra buttons at the end of the row (showreel: move up/down, remove). */
+  tools?: ReactNode;
 }
 
-function ClipLane({ index, clip, sourceName, sourceDuration: dur, thumbnails, locked, onChange, onUpload, onUseMain }: LaneProps) {
+export function ClipLane({ index, clip, sourceName, sourceDuration: dur, thumbnails, locked, onChange, onUpload, onUseMain, uploadLabel = 'Own clip', tools }: LaneProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLCanvasElement>(null);
   const [width, setWidth] = useState(400);
@@ -306,12 +277,13 @@ function ClipLane({ index, clip, sourceName, sourceDuration: dur, thumbnails, lo
           <span className="muted">to</span>
           <LaneTime label={`End of highlight ${index + 1}`} value={clip.end} disabled={locked} onCommit={(t) => setTime('end', t)} />
           <span className="seg-dur">{(clip.end - clip.start).toFixed(2)}s</span>
-          <FileButton label="Own clip" accept={VIDEO_ACCEPT} onFile={onUpload} className="btn tiny" />
-          {clip.sourceId !== MAIN && (
+          <FileButton label={uploadLabel} accept={VIDEO_ACCEPT} onFile={onUpload} className="btn tiny" />
+          {onUseMain && clip.sourceId !== MAIN && (
             <button type="button" className="btn tiny" onClick={onUseMain} disabled={locked}>
               Use launch video
             </button>
           )}
+          {tools && <span className="lane-tools">{tools}</span>}
         </div>
       </div>
     </div>
